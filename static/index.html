@@ -191,6 +191,20 @@ function countrySlug(country) {
   return country.toLowerCase().replace(/ /g, '-');
 }
 
+// Country flag image from flagcdn.com (free, served via Cloudflare).
+// `size` is a Tailwind height class like "h-6" or "h-8". Falls back to
+// the Unicode flag emoji if we don't have the ISO code.
+function flagImg(country, size = 'h-6') {
+  const l = lineup(country);
+  if (!l.iso) return `<span class="text-lg">${l.flag || ''}</span>`;
+  const iso = l.iso.toLowerCase();
+  return `<img src="https://flagcdn.com/h60/${iso}.png"
+               srcset="https://flagcdn.com/h120/${iso}.png 2x"
+               alt="${country} flag"
+               loading="lazy"
+               class="inline-block ${size} w-auto rounded-sm shadow ring-1 ring-white/10 align-middle" />`;
+}
+
 function participantUrl(country) {
   // Eurovision.tv canonical participant page — has the official video,
   // lyrics, artist bio, and voting info.
@@ -546,8 +560,9 @@ function renderEV() {
     <div class="${card} border rounded-lg p-3">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
-          <div class="flex items-baseline gap-2 flex-wrap">
-            <div class="font-bold text-lg">${l.flag} ${r.country}</div>
+          <div class="flex items-center gap-2 flex-wrap">
+            ${flagImg(r.country, 'h-7')}
+            <div class="font-bold text-lg">${r.country}</div>
             ${r.event_label ? `<div class="text-[10px] uppercase tracking-wide text-blue-300 bg-blue-900/40 px-2 py-0.5 rounded">${r.event_label}</div>` : ''}
             <div class="text-[10px] uppercase tracking-wide ${badge} px-2 py-0.5 rounded">${side}</div>
           </div>
@@ -663,8 +678,9 @@ function renderPositions() {
     <div class="bg-gray-800/60 border border-gray-700 rounded-lg p-3">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
-          <div class="flex items-baseline gap-2 flex-wrap">
-            <div class="font-bold">${l.flag} ${p.country}</div>
+          <div class="flex items-center gap-2 flex-wrap">
+            ${flagImg(p.country, 'h-6')}
+            <div class="font-bold">${p.country}</div>
             ${p.event_label ? `<div class="text-[10px] uppercase tracking-wide text-blue-300 bg-blue-900/40 px-2 py-0.5 rounded">${p.event_label}</div>` : ''}
             <div class="text-[10px] uppercase tracking-wide ${sideClass} px-2 py-0.5 rounded">${p.side.toUpperCase()}</div>
           </div>
@@ -715,12 +731,12 @@ function renderAll() {
     const sideClass = r.side === 'no'
       ? 'text-orange-300/90 bg-orange-900/30'
       : 'text-emerald-300/90 bg-emerald-900/30';
-    const l = lineup(r.country);
     return `
     <div class="flex justify-between items-center px-3 py-2">
       <div class="min-w-0">
         <div class="flex items-center gap-2 flex-wrap">
-          <span>${l.flag} ${r.country}</span>
+          ${flagImg(r.country, 'h-4')}
+          <span>${r.country}</span>
           ${r.event_label ? `<span class="text-[9px] uppercase tracking-wide text-blue-300/80 bg-blue-900/30 px-1.5 py-0.5 rounded">${r.event_label}</span>` : ''}
           <span class="text-[9px] uppercase tracking-wide ${sideClass} px-1.5 py-0.5 rounded">${side}</span>
         </div>
