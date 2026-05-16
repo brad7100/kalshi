@@ -67,7 +67,11 @@
     <button id="testAlertBtn" class="flex-1 bg-blue-700 active:bg-blue-800 py-2 rounded text-xs">Test alert</button>
     <button id="enableNotifBtn" class="flex-1 bg-purple-700 active:bg-purple-800 py-2 rounded text-xs">Enable system notifications</button>
   </div>
+  <div class="flex flex-wrap gap-2">
+    <button id="testNtfyBtn" class="flex-1 bg-amber-700 active:bg-amber-800 py-2 rounded text-xs">Send ntfy test push</button>
+  </div>
   <div id="notifStatus" class="text-[11px] text-gray-400"></div>
+  <div id="ntfyStatus" class="text-[11px] text-gray-400"></div>
 </div>
 
 <nav class="sticky top-[57px] z-20 bg-gray-900/95 backdrop-blur border-b border-gray-800 flex text-sm">
@@ -234,6 +238,16 @@ function updateNotifStatus() {
   el.textContent = `Notification permission: ${Notification.permission}`;
 }
 
+function updateNtfyStatus(health) {
+  const el = document.getElementById('ntfyStatus');
+  if (!el) return;
+  if (health && health.ntfy_configured) {
+    el.innerHTML = '<span class="text-green-400">ntfy push: enabled</span> — alerts fire even when this app is closed.';
+  } else {
+    el.innerHTML = '<span class="text-yellow-400">ntfy push: not configured.</span> Set NTFY_TOPIC in Railway env vars.';
+  }
+}
+
 async function fetchJSON(url, opts = {}) {
   const res = await fetch(url, opts);
   const ct = res.headers.get('content-type') || '';
@@ -254,6 +268,7 @@ async function refresh() {
       fetchJSON('/api/positions'),
     ]);
     document.getElementById('dryRunBadge').classList.toggle('hidden', !health.dry_run);
+    updateNtfyStatus(health);
     scanData = scan;
     positionsData = pos;
     renderEV();
@@ -538,6 +553,28 @@ document.getElementById('enableNotifBtn').addEventListener('click', async () => 
     await Notification.requestPermission();
   } catch {}
   updateNotifStatus();
+});
+
+document.getElementById('testNtfyBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('testNtfyBtn');
+  const el = document.getElementById('ntfyStatus');
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = 'Sending...';
+  try {
+    const res = await fetch('/api/ntfy/test', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      el.innerHTML = `<span class="text-red-400">ntfy test failed:</span> ${data.detail || res.status}`;
+    } else {
+      el.innerHTML = `<span class="text-green-400">ntfy test pushed</span> via ${data.server || 'ntfy.sh'}. Check your phone.`;
+    }
+  } catch (e) {
+    el.innerHTML = `<span class="text-red-400">ntfy test error:</span> ${e.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
 });
 
 loadSettings();

@@ -36,6 +36,12 @@ ready to go live.
 | `KALSHI_PRIVATE_KEY` | for /api/positions and live orders | Full PEM contents. Newlines can be literal `\n` (Railway pastes work). |
 | `DRY_RUN` | no | `true` (default) = stub orders; `false` = real |
 | `MAX_ORDER_USD` | no | Per-order notional cap. Default 50. |
+| `NTFY_TOPIC` | no | ntfy.sh topic for background push notifications. Treat as a secret — anyone with the topic name can read alerts. |
+| `NTFY_SERVER` | no | Override ntfy server. Default `https://ntfy.sh`. |
+| `NTFY_BUY_EV_PCT` | no | Push BUY alert when EV/$ ≥ this %. Default 1.5. |
+| `NTFY_SELL_EDGE_C` | no | Push SELL alert when (bid − fair − fee) ≥ this cents. Default 1.0. |
+| `NTFY_COOLDOWN_SEC` | no | Min seconds between alerts for the same ticker side. Default 300. |
+| `NTFY_INTERVAL_SEC` | no | Background scan interval. Default 30. |
 
 ## Local dev
 

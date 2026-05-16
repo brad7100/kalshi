@@ -23,8 +23,12 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -46,12 +50,167 @@ APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() not in ("0", "false", "no", "off")
 MAX_ORDER_USD = float(os.getenv("MAX_ORDER_USD", "50"))
 
+# ntfy.sh background push (works when the app is closed / phone locked)
+NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
+NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+NTFY_BUY_EV_PCT = float(os.getenv("NTFY_BUY_EV_PCT", "1.5"))
+NTFY_SELL_EDGE_C = float(os.getenv("NTFY_SELL_EDGE_C", "1.0"))
+NTFY_COOLDOWN_SEC = int(os.getenv("NTFY_COOLDOWN_SEC", "300"))
+NTFY_INTERVAL_SEC = int(os.getenv("NTFY_INTERVAL_SEC", "30"))
+
 if not APP_PASSWORD:
     log.warning("APP_PASSWORD not set — app is OPEN. Do not deploy like this.")
 if DRY_RUN:
     log.warning("DRY_RUN enabled — /api/order will NOT place real orders.")
+if NTFY_TOPIC:
+    log.info(f"ntfy push enabled: server={NTFY_SERVER}, interval={NTFY_INTERVAL_SEC}s, "
+             f"buy>={NTFY_BUY_EV_PCT}%, sell>={NTFY_SELL_EDGE_C}c, cooldown={NTFY_COOLDOWN_SEC}s")
+else:
+    log.info("NTFY_TOPIC not set — background push disabled.")
 
-app = FastAPI(title="Eurovision EV Scanner", version="0.1")
+
+# ---- ntfy push ------------------------------------------------------------
+
+_ntfy_last_alert_at: dict[str, float] = {}
+_ntfy_stop = threading.Event()
+
+
+def ntfy_send(message: str, *, title: str | None = None,
+              priority: str = "default",
+              tags: list[str] | None = None) -> tuple[bool, str]:
+    """POST to ntfy.sh/{topic}. Returns (ok, error)."""
+    if not NTFY_TOPIC:
+        return False, "NTFY_TOPIC not set"
+    url = f"{NTFY_SERVER}/{NTFY_TOPIC}"
+    headers: dict[str, str] = {"Content-Type": "text/plain; charset=utf-8"}
+    if title:
+        # ntfy reads the Title header as Latin-1; encode unicode as ASCII-safe
+        headers["Title"] = title.encode("ascii", "replace").decode("ascii")
+    if priority:
+        headers["Priority"] = priority
+    if tags:
+        headers["Tags"] = ",".join(tags)
+    req = urllib.request.Request(
+        url, data=message.encode("utf-8"), headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            r.read()
+        return True, ""
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        return False, str(e)
+
+
+def _ntfy_should_fire(key: str) -> bool:
+    now = time.time()
+    if now - _ntfy_last_alert_at.get(key, 0.0) < NTFY_COOLDOWN_SEC:
+        return False
+    _ntfy_last_alert_at[key] = now
+    return True
+
+
+def _check_opportunities_and_push() -> dict:
+    """One pass: scan, find +EV buy signals and net-of-fee sell signals on
+    held positions, push novel ones via ntfy. Returns a small summary."""
+    summary = {"buys_pushed": 0, "sells_pushed": 0, "errors": []}
+    try:
+        scan_data = scanner.run_scan(contracts=100, price_side="mid")
+    except Exception as e:
+        summary["errors"].append(f"scan: {e}")
+        return summary
+
+    # BUY signals
+    for r in scan_data.get("rows", []):
+        ev_pct = (r.get("ev_per_dollar") or 0) * 100
+        if ev_pct < NTFY_BUY_EV_PCT:
+            continue
+        key = r["ticker"] + ":buy"
+        if not _ntfy_should_fire(key):
+            continue
+        title = f"BUY {r['event_label']} {r['country']} +{ev_pct:.1f}% EV"
+        body = (f"Kalshi {(r['kalshi_ask']*100):.0f}c -> Poly fair "
+                f"{(r['true_prob']*100):.0f}c | {r['ticker']}")
+        ok, err = ntfy_send(body, title=title, priority="high",
+                            tags=["green_circle", "money"])
+        if ok:
+            summary["buys_pushed"] += 1
+        else:
+            summary["errors"].append(f"push buy {r['ticker']}: {err}")
+
+    # SELL signals — only if Kalshi creds are loaded
+    if kalshi.configured:
+        try:
+            positions = kalshi.get_positions(limit=200)
+        except (KalshiError, KalshiNotConfigured) as e:
+            summary["errors"].append(f"positions: {e}")
+            return summary
+        price_by_ticker = {r["ticker"]: r for r in scan_data.get("rows", [])}
+        raw = positions.get("market_positions") or positions.get("positions") or []
+        for pos in raw:
+            ticker = pos.get("ticker") or ""
+            if "EUROVISION" not in ticker.upper():
+                continue
+            try:
+                position_count = float(pos.get("position_fp")
+                                       or pos.get("position") or 0)
+            except (TypeError, ValueError):
+                continue
+            if position_count <= 0:
+                continue
+            row = price_by_ticker.get(ticker, {})
+            bid = row.get("kalshi_bid")
+            fair = row.get("true_prob")
+            if bid is None or fair is None or bid <= 0:
+                continue
+            fee = scanner.kalshi_taker_fee_per_contract(
+                bid, int(abs(position_count)) or 100
+            )
+            net_edge = bid - fair - fee
+            if net_edge * 100 < NTFY_SELL_EDGE_C:
+                continue
+            key = ticker + ":sell"
+            if not _ntfy_should_fire(key):
+                continue
+            ev_label, ev_country = _label_for_ticker(ticker)
+            title = f"SELL {ev_label} {ev_country or ticker} +{net_edge*100:.1f}c NET"
+            body = (f"Bid {(bid*100):.0f}c vs fair {(fair*100):.0f}c, "
+                    f"after {(fee*100):.1f}c fee | "
+                    f"{int(position_count)} contracts | {ticker}")
+            ok, err = ntfy_send(body, title=title, priority="high",
+                                tags=["red_circle", "warning"])
+            if ok:
+                summary["sells_pushed"] += 1
+            else:
+                summary["errors"].append(f"push sell {ticker}: {err}")
+    return summary
+
+
+def _ntfy_loop() -> None:
+    log.info("ntfy background loop started")
+    while not _ntfy_stop.is_set():
+        try:
+            s = _check_opportunities_and_push()
+            if s["buys_pushed"] or s["sells_pushed"] or s["errors"]:
+                log.info(f"ntfy loop: {s}")
+        except Exception:
+            log.exception("ntfy loop error")
+        _ntfy_stop.wait(NTFY_INTERVAL_SEC)
+    log.info("ntfy background loop stopped")
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    thread = None
+    if NTFY_TOPIC:
+        thread = threading.Thread(target=_ntfy_loop, daemon=True, name="ntfy")
+        thread.start()
+    try:
+        yield
+    finally:
+        _ntfy_stop.set()
+
+
+app = FastAPI(title="Eurovision EV Scanner", version="0.1", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=False,
@@ -127,7 +286,23 @@ def health():
         "dry_run": DRY_RUN,
         "kalshi_configured": kalshi.configured,
         "auth_enabled": bool(APP_PASSWORD),
+        "ntfy_configured": bool(NTFY_TOPIC),
     }
+
+
+@app.post("/api/ntfy/test")
+def api_ntfy_test(_: str = Depends(require_auth)):
+    if not NTFY_TOPIC:
+        raise HTTPException(503, "NTFY_TOPIC not set in env vars")
+    ok, err = ntfy_send(
+        "If you got this, server -> ntfy.sh -> your phone is wired up.",
+        title="Eurovision EV: test push",
+        priority="default",
+        tags=["white_check_mark"],
+    )
+    if not ok:
+        raise HTTPException(502, f"ntfy push failed: {err}")
+    return {"ok": True, "server": NTFY_SERVER}
 
 
 @app.get("/")
