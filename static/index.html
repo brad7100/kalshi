@@ -23,9 +23,52 @@
   </div>
   <div class="flex items-center gap-2">
     <span id="dryRunBadge" class="hidden text-[10px] font-bold bg-yellow-600 text-black px-2 py-1 rounded">DRY-RUN</span>
-    <button id="refreshBtn" class="bg-blue-600 active:bg-blue-700 px-3 py-2 rounded text-sm font-medium">Refresh</button>
+    <button id="settingsBtn" class="bg-gray-700 active:bg-gray-600 px-3 py-2 rounded text-sm">⚙</button>
+    <button id="refreshBtn" class="bg-blue-600 active:bg-blue-700 px-3 py-2 rounded text-sm font-medium">↻</button>
   </div>
 </header>
+
+<!-- Toasts (alerts) -->
+<div id="toasts" class="fixed top-16 left-2 right-2 z-40 space-y-2 pointer-events-none"></div>
+
+<!-- Settings drawer -->
+<div id="settingsPanel" class="hidden bg-gray-800 border-b border-gray-700 px-4 py-3 text-sm space-y-3">
+  <div class="font-semibold">Alert settings</div>
+  <label class="flex items-center justify-between gap-3">
+    <span>Buy alert when EV/$ ≥</span>
+    <span class="flex items-center gap-1">
+      <input id="setBuyEV" type="number" step="0.1" min="0" max="20" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
+      <span>%</span>
+    </span>
+  </label>
+  <label class="flex items-center justify-between gap-3">
+    <span>Sell alert when bid − fair ≥</span>
+    <span class="flex items-center gap-1">
+      <input id="setSellC" type="number" step="0.1" min="0" max="20" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
+      <span>¢</span>
+    </span>
+  </label>
+  <label class="flex items-center justify-between gap-3">
+    <span>Cooldown per ticker</span>
+    <span class="flex items-center gap-1">
+      <input id="setCooldown" type="number" step="10" min="20" max="900" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
+      <span>s</span>
+    </span>
+  </label>
+  <label class="flex items-center justify-between gap-3">
+    <span>Play sound</span>
+    <input id="setSound" type="checkbox" class="w-5 h-5" />
+  </label>
+  <label class="flex items-center justify-between gap-3">
+    <span>Vibrate</span>
+    <input id="setVibrate" type="checkbox" class="w-5 h-5" />
+  </label>
+  <div class="flex flex-wrap gap-2 pt-1">
+    <button id="testAlertBtn" class="flex-1 bg-blue-700 active:bg-blue-800 py-2 rounded text-xs">Test alert</button>
+    <button id="enableNotifBtn" class="flex-1 bg-purple-700 active:bg-purple-800 py-2 rounded text-xs">Enable system notifications</button>
+  </div>
+  <div id="notifStatus" class="text-[11px] text-gray-400"></div>
+</div>
 
 <nav class="sticky top-[57px] z-20 bg-gray-900/95 backdrop-blur border-b border-gray-800 flex text-sm">
   <button data-tab="ev"  class="tab flex-1 py-3 border-b-2 border-green-500 text-green-400">+EV</button>
@@ -73,6 +116,122 @@ let positionsData = null;
 let currentIntent = null;
 let currentToken = null;
 
+// ---- Alert engine ---------------------------------------------------------
+
+const settings = {
+  buyEvPct: 1.5,        // alert when EV/$ >= this %
+  sellEdgeC: 1.0,       // alert when bid - fair >= this many cents
+  cooldownSec: 120,
+  soundOn: true,
+  vibrateOn: true,
+};
+const lastAlertAt = {};   // ticker (+":sell") -> ms timestamp
+let audioCtx = null;
+
+function loadSettings() {
+  try {
+    Object.assign(settings, JSON.parse(localStorage.getItem('ev_settings') || '{}'));
+  } catch {}
+  document.getElementById('setBuyEV').value = settings.buyEvPct;
+  document.getElementById('setSellC').value = settings.sellEdgeC;
+  document.getElementById('setCooldown').value = settings.cooldownSec;
+  document.getElementById('setSound').checked = settings.soundOn;
+  document.getElementById('setVibrate').checked = settings.vibrateOn;
+  updateNotifStatus();
+}
+
+function saveSettings() {
+  settings.buyEvPct = parseFloat(document.getElementById('setBuyEV').value) || 0;
+  settings.sellEdgeC = parseFloat(document.getElementById('setSellC').value) || 0;
+  settings.cooldownSec = parseInt(document.getElementById('setCooldown').value, 10) || 120;
+  settings.soundOn = document.getElementById('setSound').checked;
+  settings.vibrateOn = document.getElementById('setVibrate').checked;
+  localStorage.setItem('ev_settings', JSON.stringify(settings));
+}
+
+function playBeep(kind) {
+  if (!settings.soundOn) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // BUY = rising two-tone, SELL = falling two-tone
+    const freqs = kind === 'sell' ? [880, 587] : [587, 880];
+    freqs.forEach((f, i) => {
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.connect(g); g.connect(audioCtx.destination);
+      o.frequency.value = f;
+      const t = audioCtx.currentTime + i * 0.18;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+      o.start(t); o.stop(t + 0.17);
+    });
+  } catch (e) { /* iOS pre-gesture: silently skip */ }
+}
+
+function showToast(message, kind) {
+  const wrap = document.getElementById('toasts');
+  const colors = kind === 'sell'
+    ? 'bg-red-900/90 border-red-500 text-red-100'
+    : 'bg-green-900/90 border-green-500 text-green-100';
+  const el = document.createElement('div');
+  el.className = `pointer-events-auto border rounded-lg px-3 py-2 shadow-lg text-sm font-medium ${colors} animate-pulse`;
+  el.innerHTML = message;
+  wrap.appendChild(el);
+  setTimeout(() => { el.classList.remove('animate-pulse'); }, 1200);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 600ms'; }, 8000);
+  setTimeout(() => { el.remove(); }, 9000);
+}
+
+function fireAlert(key, kind, title, body) {
+  const now = Date.now();
+  if (lastAlertAt[key] && now - lastAlertAt[key] < settings.cooldownSec * 1000) return false;
+  lastAlertAt[key] = now;
+  playBeep(kind);
+  if (settings.vibrateOn && navigator.vibrate) {
+    navigator.vibrate(kind === 'sell' ? [120, 80, 120, 80, 120] : [200, 100, 200]);
+  }
+  showToast(`<b>${title}</b><br><span class="text-xs font-normal opacity-90">${body}</span>`, kind);
+  if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+    try { new Notification(title, { body, tag: key, renotify: true }); } catch {}
+  }
+  return true;
+}
+
+function checkAlerts() {
+  let fired = 0;
+  // BUY: rows where EV/$ crosses threshold
+  for (const r of (scanData?.rows || [])) {
+    const evPct = (r.ev_per_dollar || 0) * 100;
+    if (evPct >= settings.buyEvPct) {
+      const title = `BUY ${r.event_label}: ${r.country} +${evPct.toFixed(1)}% EV`;
+      const body = `Kalshi ${(r.kalshi_ask*100).toFixed(0)}¢ → Poly fair ${(r.true_prob*100).toFixed(0)}¢ (${r.ticker})`;
+      if (fireAlert(r.ticker + ':buy', 'buy', title, body)) fired++;
+    }
+  }
+  // SELL: positions where bid > fair value by threshold
+  for (const p of (positionsData?.positions || [])) {
+    if (!p.position || p.position <= 0) continue;
+    if (p.current_yes_bid == null || p.true_prob == null) continue;
+    const edgeC = (p.current_yes_bid - p.true_prob) * 100;
+    if (edgeC >= settings.sellEdgeC) {
+      const title = `SELL ${p.event_label}: ${p.country} +${edgeC.toFixed(1)}¢ above fair`;
+      const body = `Bid ${(p.current_yes_bid*100).toFixed(0)}¢ vs fair ${(p.true_prob*100).toFixed(0)}¢ — ${Math.abs(p.position)} contracts (${p.ticker})`;
+      if (fireAlert(p.ticker + ':sell', 'sell', title, body)) fired++;
+    }
+  }
+  return fired;
+}
+
+function updateNotifStatus() {
+  const el = document.getElementById('notifStatus');
+  if (!('Notification' in window)) {
+    el.textContent = 'System notifications not supported in this browser.';
+    return;
+  }
+  el.textContent = `Notification permission: ${Notification.permission}`;
+}
+
 async function fetchJSON(url, opts = {}) {
   const res = await fetch(url, opts);
   const ct = res.headers.get('content-type') || '';
@@ -98,7 +257,9 @@ async function refresh() {
     renderEV();
     renderPositions();
     renderAll();
-    setStatus('Updated ' + new Date().toLocaleTimeString());
+    const fired = checkAlerts();
+    const stamp = 'Updated ' + new Date().toLocaleTimeString();
+    setStatus(fired ? `${stamp} • ${fired} alert${fired === 1 ? '' : 's'}` : stamp);
   } catch (e) {
     setStatus('Error: ' + e.message);
   }
@@ -354,6 +515,30 @@ document.querySelectorAll('.tab').forEach(btn => {
 });
 
 document.getElementById('refreshBtn').addEventListener('click', refresh);
+
+// Settings panel wiring
+document.getElementById('settingsBtn').addEventListener('click', () => {
+  document.getElementById('settingsPanel').classList.toggle('hidden');
+});
+['setBuyEV', 'setSellC', 'setCooldown', 'setSound', 'setVibrate'].forEach(id => {
+  document.getElementById(id).addEventListener('change', saveSettings);
+});
+document.getElementById('testAlertBtn').addEventListener('click', () => {
+  // Force-clear cooldown for the test key, then fire two alerts.
+  delete lastAlertAt['__test:buy'];
+  delete lastAlertAt['__test:sell'];
+  fireAlert('__test:buy', 'buy', 'BUY test', 'Two-tone rising beep + vibrate.');
+  setTimeout(() => fireAlert('__test:sell', 'sell', 'SELL test', 'Two-tone falling beep + longer vibrate.'), 700);
+});
+document.getElementById('enableNotifBtn').addEventListener('click', async () => {
+  if (!('Notification' in window)) { updateNotifStatus(); return; }
+  try {
+    await Notification.requestPermission();
+  } catch {}
+  updateNotifStatus();
+});
+
+loadSettings();
 refresh();
 setInterval(refresh, 20000);
 </script>
