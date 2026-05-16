@@ -158,28 +158,34 @@ class KalshiClient:
                              params={"limit": limit})
 
     def place_order(self, ticker: str, side: str, action: str,
-                    count: int, yes_price_cents: int,
+                    count: int, limit_price_cents: int,
                     client_order_id: str,
-                    order_type: str = "limit",
-                    time_in_force: str = "GTC") -> dict:
+                    order_type: str = "limit") -> dict:
         """Place an order.
 
         side: 'yes' or 'no'
         action: 'buy' or 'sell'
-        count: number of contracts
-        yes_price_cents: integer price in cents (1-99) for the YES side
-        client_order_id: idempotency token; passing the same value twice
-            with the same intent will not double-fire.
+        count: integer contract count
+        limit_price_cents: limit price in cents (1-99) FOR THE SIDE you're
+            trading. Kalshi accepts yes_price for YES orders and no_price
+            for NO orders; we route to the right field.
+        client_order_id: idempotency token; the same value with the same
+            intent will not double-fire.
         """
-        body = {
+        body: dict[str, Any] = {
             "ticker": ticker,
             "client_order_id": client_order_id,
             "side": side,
             "action": action,
             "count": int(count),
             "type": order_type,
-            "yes_price": int(yes_price_cents),
         }
+        if side == "yes":
+            body["yes_price"] = int(limit_price_cents)
+        elif side == "no":
+            body["no_price"] = int(limit_price_cents)
+        else:
+            raise KalshiError(f"invalid side: {side!r}")
         return self._request("POST", "/portfolio/orders", body=body)
 
     def cancel_order(self, order_id: str) -> dict:

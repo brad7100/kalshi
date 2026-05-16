@@ -119,32 +119,38 @@ def _check_opportunities_and_push() -> dict:
         summary["errors"].append(f"scan: {e}")
         return summary
 
-    # BUY signals
+    # BUY signals — each row is already (ticker, side); both YES and NO
+    # opportunities flow through the same path.
     for r in scan_data.get("rows", []):
         ev_pct = (r.get("ev_per_dollar") or 0) * 100
         if ev_pct < NTFY_BUY_EV_PCT:
             continue
-        key = r["ticker"] + ":buy"
+        side = r.get("side", "yes")
+        key = f"{r['ticker']}:{side}:buy"
         if not _ntfy_should_fire(key):
             continue
-        title = f"BUY {r['event_label']} {r['country']} +{ev_pct:.1f}% EV"
-        body = (f"Kalshi {(r['kalshi_ask']*100):.0f}c -> Poly fair "
-                f"{(r['true_prob']*100):.0f}c | {r['ticker']}")
+        title = f"BUY {side.upper()} {r['event_label']} {r['country']} +{ev_pct:.1f}% EV"
+        body = (f"{side.upper()} ask {(r['kalshi_ask']*100):.0f}c -> Poly "
+                f"P({side.upper()})={(r['true_prob']*100):.0f}c | {r['ticker']}")
         ok, err = ntfy_send(body, title=title, priority="high",
                             tags=["green_circle", "money"])
         if ok:
             summary["buys_pushed"] += 1
         else:
-            summary["errors"].append(f"push buy {r['ticker']}: {err}")
+            summary["errors"].append(f"push buy {side} {r['ticker']}: {err}")
 
-    # SELL signals — only if Kalshi creds are loaded
+    # SELL signals — only if Kalshi creds are loaded. Sells close whatever
+    # side the user actually holds; for a long-NO position we compare
+    # no_bid vs (1 - true_prob_yes).
     if kalshi.configured:
         try:
             positions = kalshi.get_positions(limit=200)
         except (KalshiError, KalshiNotConfigured) as e:
             summary["errors"].append(f"positions: {e}")
             return summary
-        price_by_ticker = {r["ticker"]: r for r in scan_data.get("rows", [])}
+        price_by_ticker_side = {
+            (r["ticker"], r["side"]): r for r in scan_data.get("rows", [])
+        }
         raw = positions.get("market_positions") or positions.get("positions") or []
         for pos in raw:
             ticker = pos.get("ticker") or ""
@@ -155,9 +161,10 @@ def _check_opportunities_and_push() -> dict:
                                        or pos.get("position") or 0)
             except (TypeError, ValueError):
                 continue
-            if position_count <= 0:
+            if position_count == 0:
                 continue
-            row = price_by_ticker.get(ticker, {})
+            position_side = "yes" if position_count > 0 else "no"
+            row = price_by_ticker_side.get((ticker, position_side), {})
             bid = row.get("kalshi_bid")
             fair = row.get("true_prob")
             if bid is None or fair is None or bid <= 0:
@@ -168,20 +175,21 @@ def _check_opportunities_and_push() -> dict:
             net_edge = bid - fair - fee
             if net_edge * 100 < NTFY_SELL_EDGE_C:
                 continue
-            key = ticker + ":sell"
+            key = f"{ticker}:{position_side}:sell"
             if not _ntfy_should_fire(key):
                 continue
             ev_label, ev_country = _label_for_ticker(ticker)
-            title = f"SELL {ev_label} {ev_country or ticker} +{net_edge*100:.1f}c NET"
-            body = (f"Bid {(bid*100):.0f}c vs fair {(fair*100):.0f}c, "
-                    f"after {(fee*100):.1f}c fee | "
-                    f"{int(position_count)} contracts | {ticker}")
+            title = (f"SELL {position_side.upper()} {ev_label} "
+                     f"{ev_country or ticker} +{net_edge*100:.1f}c NET")
+            body = (f"{position_side.upper()} bid {(bid*100):.0f}c vs fair "
+                    f"{(fair*100):.0f}c, after {(fee*100):.1f}c fee | "
+                    f"{int(abs(position_count))} contracts | {ticker}")
             ok, err = ntfy_send(body, title=title, priority="high",
                                 tags=["red_circle", "warning"])
             if ok:
                 summary["sells_pushed"] += 1
             else:
-                summary["errors"].append(f"push sell {ticker}: {err}")
+                summary["errors"].append(f"push sell {position_side} {ticker}: {err}")
     return summary
 
 
@@ -356,8 +364,12 @@ def api_positions(_: str = Depends(require_auth)):
     # We show every Eurovision-adjacent position the user holds, not just
     # the main Winner market — they may also hold Jury / Televote / Top N
     # / Semi-Final / Last Place positions under sibling Kalshi series.
+    # Lookup is keyed by (ticker, side) so YES vs NO holdings each get the
+    # right bid/ask/fair-value reference.
     scan = scanner.run_scan(contracts=100)
-    price_by_ticker = {r["ticker"]: r for r in scan.get("rows", [])}
+    price_by_ticker_side = {
+        (r["ticker"], r["side"]): r for r in scan.get("rows", [])
+    }
     raw_positions = (positions_resp.get("market_positions")
                      or positions_resp.get("positions") or [])
     enriched = []
@@ -390,22 +402,25 @@ def api_positions(_: str = Depends(require_auth)):
             continue
 
         label_event, label_country = _label_for_ticker(ticker)
-        row = price_by_ticker.get(ticker, {})
+        position_side = "yes" if position_count > 0 else "no"
+        # Match the price row for the SIDE we actually hold — yes_bid/ask
+        # for long YES, no_bid/ask for long NO. true_prob in the matched
+        # row already reflects the held side's probability.
+        row = price_by_ticker_side.get((ticker, position_side), {})
 
         exposure_dollars = _ff("market_exposure_dollars")
-        # avg cost per contract, expressed in cents to match the rest of the UI
         avg_cost_cents = (exposure_dollars * 100 / abs(position_count)
                           if position_count else None)
         realized_pnl_dollars = _ff("realized_pnl_dollars")
         fees_paid_dollars = _ff("fees_paid_dollars")
 
-        # Sell-side economics (only meaningful for YES positions we hold).
-        # If we sell at current bid, the net edge vs Polymarket fair value
-        # is (bid - fair) - taker_fee_on_sell. Positive net = good to sell.
+        # Sell-side economics. Selling closes the held side at its bid:
+        #   net edge = held_side_bid - true_prob_of_held_side - sell_fee
+        # The bid/true_prob in `row` are already for the held side, so the
+        # math is the same for YES and NO positions.
         sell_edge_net_per_contract = None
         sell_fee_per_contract = None
-        if (position_count > 0
-                and row.get("kalshi_bid") is not None
+        if (row.get("kalshi_bid") is not None
                 and row.get("true_prob") is not None
                 and row.get("kalshi_bid") > 0):
             sell_fee_per_contract = scanner.kalshi_taker_fee_per_contract(
@@ -420,13 +435,13 @@ def api_positions(_: str = Depends(require_auth)):
             "country": label_country or ticker,
             "event_label": label_event,
             "position": position_count,
-            "side": "yes" if position_count > 0 else "no",
+            "side": position_side,
             "avg_cost_cents": avg_cost_cents,
             "exposure_dollars": exposure_dollars,
-            "current_yes_bid": row.get("kalshi_bid"),
-            "current_yes_ask": row.get("kalshi_ask"),
-            "ev_per_dollar": row.get("ev_per_dollar"),
-            "true_prob": row.get("true_prob"),
+            "current_yes_bid": row.get("kalshi_bid"),   # bid of held side
+            "current_yes_ask": row.get("kalshi_ask"),   # ask of held side
+            "ev_per_dollar": row.get("ev_per_dollar"),  # EV of BUYING more of held side now
+            "true_prob": row.get("true_prob"),          # P(held side wins)
             "sell_edge_net_per_contract": sell_edge_net_per_contract,
             "sell_fee_per_contract": sell_fee_per_contract,
             "realized_pnl_dollars": realized_pnl_dollars,
@@ -469,20 +484,22 @@ def api_recommend(body: RecommendBody, _: str = Depends(require_auth)):
     Token expires after 60s.
     """
     scan = scanner.run_scan(contracts=body.count)
-    row = next((r for r in scan["rows"] if r["ticker"] == body.ticker), None)
+    # Find the row for this exact (ticker, side) — kalshi_bid/ask in the
+    # matched row are already the right side's prices, so the price math
+    # is identical for YES and NO.
+    row = next((r for r in scan["rows"]
+                if r["ticker"] == body.ticker and r["side"] == body.side), None)
     if not row:
-        raise HTTPException(404, f"Ticker {body.ticker} not in current scan")
+        raise HTTPException(
+            404,
+            f"Ticker {body.ticker} (side={body.side}) not in current scan"
+        )
 
-    # default to current ask for buy, current bid for sell
     if body.limit_price_cents is None:
-        if body.action == "buy" and body.side == "yes":
-            px = int(round(row["kalshi_ask"] * 100))
-        elif body.action == "sell" and body.side == "yes":
-            px = int(round(row["kalshi_bid"] * 100))
-        elif body.action == "buy" and body.side == "no":
-            px = int(round((1 - row["kalshi_bid"]) * 100))
-        else:  # sell no
-            px = int(round((1 - row["kalshi_ask"]) * 100))
+        if body.action == "buy":
+            px = int(round((row["kalshi_ask"] or 0.01) * 100))  # ask of this side
+        else:  # sell
+            px = int(round((row["kalshi_bid"] or 0.01) * 100))  # bid of this side
         px = max(1, min(99, px))
     else:
         px = body.limit_price_cents
@@ -572,7 +589,7 @@ def api_order(body: OrderBody, _: str = Depends(require_auth)):
             side=pending["side"],
             action=pending["action"],
             count=pending["count"],
-            yes_price_cents=pending["limit_price_cents"],
+            limit_price_cents=pending["limit_price_cents"],
             client_order_id=client_order_id,
         )
     except KalshiError as e:

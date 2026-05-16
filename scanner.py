@@ -107,6 +107,8 @@ def parse_kalshi(payload: dict) -> dict[str, dict]:
             "ticker": ticker,
             "yes_ask": _f(m.get("yes_ask_dollars")),
             "yes_bid": _f(m.get("yes_bid_dollars")),
+            "no_ask":  _f(m.get("no_ask_dollars")),
+            "no_bid":  _f(m.get("no_bid_dollars")),
             "last_price": _f(m.get("last_price_dollars")),
             "volume": _f(m.get("volume_fp")),
         }
@@ -146,40 +148,57 @@ def pick_true_prob(poly_row: dict, side: str) -> float | None:
 
 def compute_rows(kalshi: dict, poly: dict, contracts: int,
                  price_side: str = "mid") -> list[dict]:
-    rows = []
+    """Produce one row per (country, side). 'side' is "yes" or "no".
+
+    On a Kalshi binary market, there are two distinct buy opportunities:
+        BUY YES at yes_ask  — pays $1 if the event happens
+        BUY NO  at no_ask   — pays $1 if it doesn't
+    These have independent prices and frequently asymmetric EV. The +EV
+    edge often shows up on the NO side of heavy favorites (e.g. fading
+    Finland) rather than the YES side. We emit a row for each tradable
+    side so the UI can show both opportunities.
+    """
+    rows: list[dict] = []
     for country, p in poly.items():
         k = kalshi.get(country)
         if not k:
             continue
-        yes_ask = k["yes_ask"]
-        if yes_ask <= 0 or yes_ask >= 1:
+        true_prob_yes = pick_true_prob(p, price_side)
+        if true_prob_yes is None or true_prob_yes <= 0:
             continue
-        true_prob = pick_true_prob(p, price_side)
-        if true_prob is None or true_prob <= 0:
-            continue
-        fee = kalshi_taker_fee_per_contract(yes_ask, contracts)
-        ev_per_contract = (
-            true_prob * (1.0 - yes_ask)
-            - (1.0 - true_prob) * yes_ask
-            - fee
-        )
-        rows.append({
+        common = {
             "country": country,
             "ticker": k["ticker"],
-            "kalshi_bid": k["yes_bid"],
-            "kalshi_ask": yes_ask,
             "kalshi_volume": k["volume"],
             "poly_bid": p.get("yes_bid"),
             "poly_ask": p.get("yes_ask"),
             "poly_mid": p.get("yes_mid"),
             "poly_last": p.get("yes_last"),
             "poly_volume": p.get("volume", 0),
-            "true_prob": true_prob,
-            "edge_pp": (true_prob - yes_ask) * 100,
-            "ev_per_contract": ev_per_contract,
-            "ev_per_dollar": ev_per_contract / yes_ask if yes_ask else 0.0,
-            "fee_per_contract": fee,
-        })
+            "poly_true_prob_yes": true_prob_yes,
+        }
+        for side, ask, bid, true_prob in (
+            ("yes", k.get("yes_ask"), k.get("yes_bid"), true_prob_yes),
+            ("no",  k.get("no_ask"),  k.get("no_bid"),  1.0 - true_prob_yes),
+        ):
+            if ask is None or ask <= 0 or ask >= 1:
+                continue
+            fee = kalshi_taker_fee_per_contract(ask, contracts)
+            ev_per_contract = (
+                true_prob * (1.0 - ask)
+                - (1.0 - true_prob) * ask
+                - fee
+            )
+            rows.append({**common,
+                "side": side,
+                "kalshi_bid": bid,
+                "kalshi_ask": ask,
+                "true_prob": true_prob,
+                "edge_pp": (true_prob - ask) * 100,
+                "ev_per_contract": ev_per_contract,
+                "ev_per_dollar": ev_per_contract / ask if ask else 0.0,
+                "fee_per_contract": fee,
+            })
     return rows
 
 
