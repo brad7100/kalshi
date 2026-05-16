@@ -181,6 +181,55 @@ const LINEUP = {
   "United Kingdom": ["GB", "🇬🇧", "Look Mum No Computer", "Eins, Zwei, Drei"],
 };
 
+// ---- Event styling -------------------------------------------------------
+// Render order on every page where rows are grouped: Winner first
+// (most liquid + most contracts), then Jury, then Televote (live during
+// the show). Anything else falls through to "Other" at the bottom.
+const EVENT_ORDER = ['Winner', 'Jury', 'Televote'];
+
+// All class names are STATIC literals so the Tailwind CDN scanner picks
+// them up. Don't interpolate the color name.
+const EVENT_STYLE = {
+  'Winner':   { icon: '🏆', text: 'text-blue-200',   border: 'border-l-blue-500',
+                head: 'bg-blue-900/40 border-blue-700' },
+  'Jury':     { icon: '⚖️', text: 'text-purple-200', border: 'border-l-purple-500',
+                head: 'bg-purple-900/40 border-purple-700' },
+  'Televote': { icon: '🎤', text: 'text-pink-200',   border: 'border-l-pink-500',
+                head: 'bg-pink-900/40 border-pink-700' },
+};
+const DEFAULT_EVENT_STYLE = { icon: '•', text: 'text-gray-200', border: 'border-l-gray-500',
+                              head: 'bg-gray-700/40 border-gray-600' };
+
+function eventStyle(label) {
+  return EVENT_STYLE[label] || DEFAULT_EVENT_STYLE;
+}
+
+function groupByEvent(items) {
+  const map = new Map();
+  for (const x of items) {
+    const k = x.event_label || 'Other';
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push(x);
+  }
+  const out = [];
+  for (const k of EVENT_ORDER) if (map.has(k)) out.push([k, map.get(k)]);
+  for (const [k, v] of map.entries()) if (!EVENT_ORDER.includes(k)) out.push([k, v]);
+  return out;
+}
+
+function eventHeader(label, countText) {
+  const s = eventStyle(label);
+  return `
+    <div class="${s.head} border border-l-4 ${s.border} rounded-md px-3 py-2 mt-3 mb-2 flex items-center justify-between">
+      <div class="flex items-center gap-2 ${s.text}">
+        <span class="text-base">${s.icon}</span>
+        <span class="text-xs font-bold uppercase tracking-wider">${label}</span>
+      </div>
+      <span class="text-[10px] text-gray-400 font-normal num">${countText}</span>
+    </div>
+  `;
+}
+
 function lineup(country) {
   const l = LINEUP[country];
   if (!l) return { iso: '', flag: '', artist: '', song: '' };
@@ -217,20 +266,31 @@ function youtubeUrl(country, artist, song) {
   return `https://www.youtube.com/results?search_query=${q}`;
 }
 
+// All external links: open in a real new tab. iOS standalone PWAs default
+// to replacing the in-app webview on plain <a> taps; window.open() via the
+// onclick handler reliably routes through to Safari instead, so the EV
+// app stays open behind the link tap.
+function extLinkAttrs(url) {
+  return `href="${url}" target="_blank" rel="noopener noreferrer" ` +
+         `onclick="window.open(this.href,'_blank','noopener,noreferrer');return false;"`;
+}
+
 function lineupSnippetHtml(country) {
   const l = lineup(country);
   if (!l.artist) return '';
+  const partU = participantUrl(country);
+  const ytU = youtubeUrl(country, l.artist, l.song);
   return `
     <div class="text-[11px] text-gray-300 mt-0.5 truncate">
-      <a href="${participantUrl(country)}" target="_blank" rel="noopener" class="hover:underline">
+      <a ${extLinkAttrs(partU)} class="hover:underline">
         <span class="text-white">${l.artist}</span>
         <span class="text-gray-400"> — </span>
         <span class="italic">${l.song}</span>
       </a>
     </div>
     <div class="flex gap-2 mt-1 text-[10px]">
-      <a href="${youtubeUrl(country, l.artist, l.song)}" target="_blank" rel="noopener" class="text-red-300 active:text-red-400">▶ Watch video</a>
-      <a href="${participantUrl(country)}" target="_blank" rel="noopener" class="text-blue-300 active:text-blue-400">Song page</a>
+      <a ${extLinkAttrs(ytU)} class="text-red-300 active:text-red-400">▶ Watch video</a>
+      <a ${extLinkAttrs(partU)} class="text-blue-300 active:text-blue-400">Song page</a>
     </div>
   `;
 }
@@ -534,6 +594,40 @@ function setStatus(s) { document.getElementById('status').textContent = s; }
 function fmtCents(v) { return v == null ? '-' : (v * 100).toFixed(1) + 'c'; }
 function fmtPct(v) { return v == null ? '-' : (v * 100).toFixed(2) + '%'; }
 
+function renderEVCardHtml(r) {
+  const side = (r.side || 'yes').toUpperCase();
+  const isNo = r.side === 'no';
+  const card = isNo ? 'bg-amber-900/20 border-amber-700' : 'bg-green-900/20 border-green-800';
+  const badge = isNo ? 'text-amber-200 bg-amber-900/60' : 'text-emerald-200 bg-emerald-900/60';
+  const ev = isNo ? 'text-amber-300' : 'text-green-400';
+  const btn = isNo ? 'bg-amber-600 active:bg-amber-700' : 'bg-green-600 active:bg-green-700';
+  const evt = eventStyle(r.event_label);
+  return `
+  <div class="${card} border border-l-4 ${evt.border} rounded-lg p-3">
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          ${flagImg(r.country, 'h-7')}
+          <div class="font-bold text-lg">${r.country}</div>
+          <div class="text-[10px] uppercase tracking-wide ${badge} px-2 py-0.5 rounded">${side}</div>
+        </div>
+        ${lineupSnippetHtml(r.country)}
+        <div class="text-[11px] text-gray-400 num break-all mt-1">${r.ticker}</div>
+        <div class="text-xs text-gray-300 mt-1 num">
+          ${side} ask <span class="text-white">${fmtCents(r.kalshi_ask)}</span>
+          &nbsp;•&nbsp; fair <span class="text-white">${fmtCents(r.true_prob)}</span>
+          &nbsp;•&nbsp; fee ${fmtCents(r.fee_per_contract)}
+        </div>
+      </div>
+      <div class="text-right shrink-0">
+        <div class="${ev} font-bold text-base num">+${fmtPct(r.ev_per_dollar)}</div>
+        <button class="mt-1 ${btn} text-white text-xs font-bold px-3 py-2 rounded"
+                onclick='openBuy(${JSON.stringify(r).replace(/'/g, "&apos;")})'>BUY ${side}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderEV() {
   const el = document.getElementById('evList');
   const pos = (scanData?.rows || []).filter(r => r.ev_per_dollar > 0);
@@ -541,47 +635,10 @@ function renderEV() {
     el.innerHTML = '<div class="text-gray-500 text-sm py-8 text-center">No +EV signals right now.</div>';
     return;
   }
-  el.innerHTML = pos.map(r => {
-    const side = (r.side || 'yes').toUpperCase();
-    const isNo = r.side === 'no';
-    // YES = green ("for the outcome"). NO = amber ("against the outcome").
-    const card = isNo
-      ? 'bg-amber-900/20 border-amber-700'
-      : 'bg-green-900/20 border-green-800';
-    const badge = isNo
-      ? 'text-amber-200 bg-amber-900/60'
-      : 'text-emerald-200 bg-emerald-900/60';
-    const ev = isNo ? 'text-amber-300' : 'text-green-400';
-    const btn = isNo
-      ? 'bg-amber-600 active:bg-amber-700'
-      : 'bg-green-600 active:bg-green-700';
-    const l = lineup(r.country);
-    return `
-    <div class="${card} border rounded-lg p-3">
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0">
-          <div class="flex items-center gap-2 flex-wrap">
-            ${flagImg(r.country, 'h-7')}
-            <div class="font-bold text-lg">${r.country}</div>
-            ${r.event_label ? `<div class="text-[10px] uppercase tracking-wide text-blue-300 bg-blue-900/40 px-2 py-0.5 rounded">${r.event_label}</div>` : ''}
-            <div class="text-[10px] uppercase tracking-wide ${badge} px-2 py-0.5 rounded">${side}</div>
-          </div>
-          ${lineupSnippetHtml(r.country)}
-          <div class="text-[11px] text-gray-400 num break-all mt-1">${r.ticker}</div>
-          <div class="text-xs text-gray-300 mt-1 num">
-            ${side} ask <span class="text-white">${fmtCents(r.kalshi_ask)}</span>
-            &nbsp;•&nbsp; fair <span class="text-white">${fmtCents(r.true_prob)}</span>
-            &nbsp;•&nbsp; fee ${fmtCents(r.fee_per_contract)}
-          </div>
-        </div>
-        <div class="text-right shrink-0">
-          <div class="${ev} font-bold text-base num">+${fmtPct(r.ev_per_dollar)}</div>
-          <button class="mt-1 ${btn} text-white text-xs font-bold px-3 py-2 rounded"
-                  onclick='openBuy(${JSON.stringify(r).replace(/'/g, "&apos;")})'>BUY ${side}</button>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
+  el.innerHTML = groupByEvent(pos).map(([label, rows]) =>
+    eventHeader(label, `${rows.length} signal${rows.length === 1 ? '' : 's'}`) +
+    `<div class="space-y-2">${rows.map(renderEVCardHtml).join('')}</div>`
+  ).join('');
 }
 
 function renderPositions() {
@@ -636,10 +693,11 @@ function renderPositions() {
     </div>`;
     return;
   }
-  el.innerHTML = ps.map(p => {
+  const renderPosCard = (p) => {
     const avgCost = p.avg_cost_cents != null ? p.avg_cost_cents.toFixed(1) + 'c' : '-';
     const recognizedPrice = p.current_yes_ask != null;
     const sideClass = p.side === 'no' ? 'text-amber-200 bg-amber-900/60' : 'text-emerald-200 bg-emerald-900/60';
+    const evt = eventStyle(p.event_label);
 
     // Aggregate $ values
     const usd = v => v == null ? '–' : '$' + v.toFixed(2);
@@ -675,13 +733,12 @@ function renderPositions() {
 
     const l = lineup(p.country);
     return `
-    <div class="bg-gray-800/60 border border-gray-700 rounded-lg p-3">
+    <div class="bg-gray-800/60 border border-gray-700 border-l-4 ${evt.border} rounded-lg p-3">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <div class="flex items-center gap-2 flex-wrap">
             ${flagImg(p.country, 'h-6')}
             <div class="font-bold">${p.country}</div>
-            ${p.event_label ? `<div class="text-[10px] uppercase tracking-wide text-blue-300 bg-blue-900/40 px-2 py-0.5 rounded">${p.event_label}</div>` : ''}
             <div class="text-[10px] uppercase tracking-wide ${sideClass} px-2 py-0.5 rounded">${p.side.toUpperCase()}</div>
           </div>
           ${lineupSnippetHtml(p.country)}
@@ -701,7 +758,12 @@ function renderPositions() {
       </div>
       ${valueBlock}
     </div>`;
-  }).join('');
+  };
+
+  el.innerHTML = groupByEvent(ps).map(([label, rows]) =>
+    eventHeader(label, `${rows.length} position${rows.length === 1 ? '' : 's'}`) +
+    `<div class="space-y-2">${rows.map(renderPosCard).join('')}</div>`
+  ).join('');
 
   // Portfolio totals: sum sell-now, cost, fair across all positions
   const totalSell = (ps || []).reduce((s, p) => s + (p.sell_value_net_dollars || 0), 0);
@@ -726,18 +788,22 @@ function renderPositions() {
 function renderAll() {
   const el = document.getElementById('allList');
   const rows = scanData?.rows || [];
-  el.innerHTML = rows.map(r => {
+  if (!rows.length) {
+    el.innerHTML = '<div class="text-gray-500 text-sm py-8 px-3 text-center">No markets loaded.</div>';
+    return;
+  }
+  const renderRow = (r) => {
     const side = (r.side || 'yes').toUpperCase();
     const sideClass = r.side === 'no'
       ? 'text-orange-300/90 bg-orange-900/30'
       : 'text-emerald-300/90 bg-emerald-900/30';
+    const evt = eventStyle(r.event_label);
     return `
-    <div class="flex justify-between items-center px-3 py-2">
+    <div class="flex justify-between items-center px-3 py-2 border-l-4 ${evt.border} bg-gray-800/40">
       <div class="min-w-0">
         <div class="flex items-center gap-2 flex-wrap">
           ${flagImg(r.country, 'h-4')}
           <span>${r.country}</span>
-          ${r.event_label ? `<span class="text-[9px] uppercase tracking-wide text-blue-300/80 bg-blue-900/30 px-1.5 py-0.5 rounded">${r.event_label}</span>` : ''}
           <span class="text-[9px] uppercase tracking-wide ${sideClass} px-1.5 py-0.5 rounded">${side}</span>
         </div>
         <div class="text-[10px] text-gray-500 num">${side} ask ${fmtCents(r.kalshi_ask)} / fair ${fmtCents(r.true_prob)}</div>
@@ -746,6 +812,13 @@ function renderAll() {
         ${fmtPct(r.ev_per_dollar)}
       </div>
     </div>`;
+  };
+  // Group, then sort each group by descending EV so the most interesting
+  // markets in each event float to the top of their section.
+  el.innerHTML = groupByEvent(rows).map(([label, group]) => {
+    const sorted = group.slice().sort((a, b) => (b.ev_per_dollar || 0) - (a.ev_per_dollar || 0));
+    return eventHeader(label, `${sorted.length} markets`) +
+           `<div class="rounded overflow-hidden divide-y divide-gray-800">${sorted.map(renderRow).join('')}</div>`;
   }).join('');
 }
 
