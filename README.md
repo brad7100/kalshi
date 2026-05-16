@@ -42,6 +42,11 @@ ready to go live.
 | `NTFY_SELL_EDGE_C` | no | Push SELL alert when (bid − fair − fee) ≥ this cents. Default 1.0. |
 | `NTFY_COOLDOWN_SEC` | no | Min seconds between alerts for the same ticker side. Default 300. |
 | `NTFY_INTERVAL_SEC` | no | Background scan interval. Default 30. |
+| `TELEVOTE_MODE_START_UTC` | no | ISO-8601 UTC timestamp, e.g. `2026-05-16T19:00:00Z`. While the current time is inside the window, the ntfy loop switches to hair-trigger thresholds. |
+| `TELEVOTE_MODE_END_UTC` | no | End of the televote window. |
+| `TELEVOTE_BUY_EV_PCT` | no | Buy threshold during televote mode. Default 0.5%. |
+| `TELEVOTE_SELL_EDGE_C` | no | Sell threshold during televote mode. Default 0.5¢. |
+| `TELEVOTE_INTERVAL_SEC` | no | Scan interval during televote mode. Default 15s. |
 
 ## Local dev
 

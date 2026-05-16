@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,17 @@ NTFY_SELL_EDGE_C = float(os.getenv("NTFY_SELL_EDGE_C", "1.0"))
 NTFY_COOLDOWN_SEC = int(os.getenv("NTFY_COOLDOWN_SEC", "300"))
 NTFY_INTERVAL_SEC = int(os.getenv("NTFY_INTERVAL_SEC", "30"))
 
+# Televote / live-show "hair-trigger" mode. When the current UTC time is
+# inside [TELEVOTE_MODE_START_UTC, TELEVOTE_MODE_END_UTC], the ntfy loop
+# uses lower thresholds + faster scan interval. Useful when prices move
+# fast during the live broadcast/voting window.
+# Both env vars are ISO-8601 timestamps, e.g. "2026-05-16T19:00:00Z".
+TELEVOTE_MODE_START_UTC = os.getenv("TELEVOTE_MODE_START_UTC", "").strip()
+TELEVOTE_MODE_END_UTC = os.getenv("TELEVOTE_MODE_END_UTC", "").strip()
+TELEVOTE_BUY_EV_PCT = float(os.getenv("TELEVOTE_BUY_EV_PCT", "0.5"))
+TELEVOTE_SELL_EDGE_C = float(os.getenv("TELEVOTE_SELL_EDGE_C", "0.5"))
+TELEVOTE_INTERVAL_SEC = int(os.getenv("TELEVOTE_INTERVAL_SEC", "15"))
+
 if not APP_PASSWORD:
     log.warning("APP_PASSWORD not set — app is OPEN. Do not deploy like this.")
 if DRY_RUN:
@@ -67,6 +78,37 @@ if NTFY_TOPIC:
              f"buy>={NTFY_BUY_EV_PCT}%, sell>={NTFY_SELL_EDGE_C}c, cooldown={NTFY_COOLDOWN_SEC}s")
 else:
     log.info("NTFY_TOPIC not set — background push disabled.")
+
+
+# ---- televote / hair-trigger mode -----------------------------------------
+
+def _parse_iso_utc(s: str) -> datetime | None:
+    if not s:
+        return None
+    try:
+        # Accept "2026-05-16T19:00:00Z" or "2026-05-16T19:00:00+00:00"
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+_televote_start = _parse_iso_utc(TELEVOTE_MODE_START_UTC)
+_televote_end = _parse_iso_utc(TELEVOTE_MODE_END_UTC)
+
+
+def is_televote_mode_active() -> bool:
+    if _televote_start is None or _televote_end is None:
+        return False
+    now = datetime.now(timezone.utc)
+    return _televote_start <= now <= _televote_end
+
+
+def get_active_alert_settings() -> tuple[float, float, int, bool]:
+    """Returns (buy_ev_pct, sell_edge_c, interval_sec, televote_active)."""
+    if is_televote_mode_active():
+        return (TELEVOTE_BUY_EV_PCT, TELEVOTE_SELL_EDGE_C,
+                TELEVOTE_INTERVAL_SEC, True)
+    return (NTFY_BUY_EV_PCT, NTFY_SELL_EDGE_C, NTFY_INTERVAL_SEC, False)
 
 
 # ---- ntfy push ------------------------------------------------------------
@@ -132,15 +174,16 @@ def _check_opportunities_and_push() -> dict:
         summary["errors"].append(f"scan: {e}")
         return summary
 
+    buy_pct, sell_c, _interval, televote_active = get_active_alert_settings()
+
     # BUY signals — each row drives a rising-edge state machine.
-    # We feed every (ticker,side) into _ntfy_should_fire so that the state
-    # tracker also sees signals dropping BELOW threshold (resets the edge
-    # so a future crossing can fire again).
+    # Threshold values come from get_active_alert_settings() so televote
+    # mode automatically lowers them during the live broadcast window.
     for r in scan_data.get("rows", []):
         ev_pct = (r.get("ev_per_dollar") or 0) * 100
         side = r.get("side", "yes")
         key = f"{r['ticker']}:{side}:buy"
-        condition_met = ev_pct >= NTFY_BUY_EV_PCT
+        condition_met = ev_pct >= buy_pct
         if not _ntfy_should_fire(key, condition_met):
             continue
         title = f"BUY {side.upper()} {r['event_label']} {r['country']} +{ev_pct:.1f}% EV"
@@ -188,7 +231,7 @@ def _check_opportunities_and_push() -> dict:
             )
             net_edge = bid - fair - fee
             key = f"{ticker}:{position_side}:sell"
-            condition_met = net_edge * 100 >= NTFY_SELL_EDGE_C
+            condition_met = net_edge * 100 >= sell_c
             if not _ntfy_should_fire(key, condition_met):
                 continue
             ev_label, ev_country = _label_for_ticker(ticker)
@@ -215,7 +258,8 @@ def _ntfy_loop() -> None:
                 log.info(f"ntfy loop: {s}")
         except Exception:
             log.exception("ntfy loop error")
-        _ntfy_stop.wait(NTFY_INTERVAL_SEC)
+        _, _, interval, _ = get_active_alert_settings()
+        _ntfy_stop.wait(interval)
     log.info("ntfy background loop stopped")
 
 
@@ -302,12 +346,23 @@ def require_auth(creds: HTTPBasicCredentials | None = Depends(security)) -> str:
 
 @app.get("/health")
 def health():
+    buy_pct, sell_c, interval, televote_active = get_active_alert_settings()
     return {
         "ok": True,
         "dry_run": DRY_RUN,
         "kalshi_configured": kalshi.configured,
         "auth_enabled": bool(APP_PASSWORD),
         "ntfy_configured": bool(NTFY_TOPIC),
+        "televote_mode_active": televote_active,
+        "televote_mode_window": {
+            "start_utc": TELEVOTE_MODE_START_UTC or None,
+            "end_utc": TELEVOTE_MODE_END_UTC or None,
+        },
+        "active_thresholds": {
+            "buy_ev_pct": buy_pct,
+            "sell_edge_c": sell_c,
+            "interval_sec": interval,
+        },
     }
 
 

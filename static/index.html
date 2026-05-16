@@ -22,11 +22,15 @@
     <div id="status" class="text-[11px] text-gray-400 num">Loading...</div>
   </div>
   <div class="flex items-center gap-2">
+    <span id="televoteBadge" class="hidden text-[10px] font-bold bg-fuchsia-500 text-black px-2 py-1 rounded animate-pulse">LIVE</span>
     <span id="dryRunBadge" class="hidden text-[10px] font-bold bg-yellow-600 text-black px-2 py-1 rounded">DRY-RUN</span>
     <button id="settingsBtn" class="bg-gray-700 active:bg-gray-600 px-3 py-2 rounded text-sm">⚙</button>
     <button id="refreshBtn" class="bg-blue-600 active:bg-blue-700 px-3 py-2 rounded text-sm font-medium">↻</button>
   </div>
 </header>
+<div id="televoteBanner" class="hidden bg-fuchsia-900/60 border-b border-fuchsia-700 px-4 py-2 text-xs text-fuchsia-100">
+  <b>TELEVOTE MODE active</b> — hair-trigger alerts: <span id="televoteThresholds" class="num"></span>
+</div>
 
 <!-- Toasts (alerts) — anchored to the BOTTOM so they never overlap the
      sticky header or the tab nav. Padded above iPhone home indicator. -->
@@ -125,6 +129,79 @@ let scanData = null;
 let positionsData = null;
 let currentIntent = null;
 let currentToken = null;
+
+// ---- Eurovision 2026 lineup ----------------------------------------------
+// Source: Wikipedia (https://en.wikipedia.org/wiki/Eurovision_Song_Contest_2026)
+// Tuple shape: [ISO2, flagEmoji, artist, song].
+const LINEUP = {
+  "Albania":        ["AL", "🇦🇱", "Alis", "Nân"],
+  "Armenia":        ["AM", "🇦🇲", "Simón", "Paloma Rumba"],
+  "Australia":      ["AU", "🇦🇺", "Delta Goodrem", "Eclipse"],
+  "Austria":        ["AT", "🇦🇹", "Cosmó", "Tanzschein"],
+  "Azerbaijan":     ["AZ", "🇦🇿", "Jiva", "Just Go"],
+  "Belgium":        ["BE", "🇧🇪", "Essyla", "Dancing on the Ice"],
+  "Bulgaria":       ["BG", "🇧🇬", "Dara", "Bangaranga"],
+  "Croatia":        ["HR", "🇭🇷", "Lelek", "Andromeda"],
+  "Cyprus":         ["CY", "🇨🇾", "Antigoni", "Jalla"],
+  "Czechia":        ["CZ", "🇨🇿", "Daniel Zizka", "Crossroads"],
+  "Denmark":        ["DK", "🇩🇰", "Søren Torpegaard Lund", "Før vi går hjem"],
+  "Estonia":        ["EE", "🇪🇪", "Vanilla Ninja", "Too Epic to Be True"],
+  "Finland":        ["FI", "🇫🇮", "Linda Lampenius & Pete Parkkonen", "Liekinheitin"],
+  "France":         ["FR", "🇫🇷", "Monroe", "Regarde!"],
+  "Georgia":        ["GE", "🇬🇪", "Bzikebi", "On Replay"],
+  "Germany":        ["DE", "🇩🇪", "Sarah Engels", "Fire"],
+  "Greece":         ["GR", "🇬🇷", "Akylas", "Ferto"],
+  "Israel":         ["IL", "🇮🇱", "Noam Bettan", "Michelle"],
+  "Italy":          ["IT", "🇮🇹", "Sal Da Vinci", "Per sempre sì"],
+  "Latvia":         ["LV", "🇱🇻", "Atvara", "Ēnā"],
+  "Lithuania":      ["LT", "🇱🇹", "Lion Ceccah", "Sólo quiero más"],
+  "Luxembourg":     ["LU", "🇱🇺", "Eva Marija", "Mother Nature"],
+  "Malta":          ["MT", "🇲🇹", "Aidan", "Bella"],
+  "Moldova":        ["MD", "🇲🇩", "Satoshi", "Viva, Moldova!"],
+  "Montenegro":     ["ME", "🇲🇪", "Tamara Živković", "Nova zora"],
+  "Norway":         ["NO", "🇳🇴", "Jonas Lovv", "Ya Ya Ya"],
+  "Poland":         ["PL", "🇵🇱", "Alicja", "Pray"],
+  "Portugal":       ["PT", "🇵🇹", "Bandidos do Cante", "Rosa"],
+  "Romania":        ["RO", "🇷🇴", "Alexandra Căpitănescu", "Choke Me"],
+  "San Marino":     ["SM", "🇸🇲", "Senhit", "Superstar"],
+  "Serbia":         ["RS", "🇷🇸", "Lavina", "Kraj mene"],
+  "Sweden":         ["SE", "🇸🇪", "Felicia", "My System"],
+  "Switzerland":    ["CH", "🇨🇭", "Veronica Fusaro", "Alice"],
+  "Ukraine":        ["UA", "🇺🇦", "Leléka", "Ridnym"],
+  "United Kingdom": ["GB", "🇬🇧", "Look Mum No Computer", "Eins, Zwei, Drei"],
+};
+
+function lineup(country) {
+  const l = LINEUP[country];
+  if (!l) return { iso: '', flag: '', artist: '', song: '' };
+  return { iso: l[0], flag: l[1], artist: l[2], song: l[3] };
+}
+
+function youtubeUrl(country, artist, song) {
+  const q = encodeURIComponent(`Eurovision 2026 ${country} ${artist} ${song}`);
+  return `https://www.youtube.com/results?search_query=${q}`;
+}
+
+function wikiUrl(country) {
+  const slug = encodeURIComponent(country.replace(/ /g, '_'));
+  return `https://en.wikipedia.org/wiki/${slug}_in_the_Eurovision_Song_Contest_2026`;
+}
+
+function lineupSnippetHtml(country) {
+  const l = lineup(country);
+  if (!l.artist) return '';
+  return `
+    <div class="text-[11px] text-gray-300 mt-0.5 truncate">
+      <span class="text-white">${l.artist}</span>
+      <span class="text-gray-400"> — </span>
+      <span class="italic">${l.song}</span>
+    </div>
+    <div class="flex gap-2 mt-1 text-[10px]">
+      <a href="${youtubeUrl(country, l.artist, l.song)}" target="_blank" rel="noopener" class="text-red-300 active:text-red-400">▶ YouTube</a>
+      <a href="${wikiUrl(country)}" target="_blank" rel="noopener" class="text-blue-300 active:text-blue-400">Wiki</a>
+    </div>
+  `;
+}
 
 // ---- Alert engine ---------------------------------------------------------
 
@@ -360,6 +437,19 @@ function updateNotifStatus() {
   el.textContent = `Notification permission: ${Notification.permission}`;
 }
 
+function updateTelevoteMode(health) {
+  const banner = document.getElementById('televoteBanner');
+  const badge = document.getElementById('televoteBadge');
+  const active = !!(health && health.televote_mode_active);
+  banner.classList.toggle('hidden', !active);
+  badge.classList.toggle('hidden', !active);
+  if (active && health.active_thresholds) {
+    const t = health.active_thresholds;
+    document.getElementById('televoteThresholds').textContent =
+      `buy ≥ ${t.buy_ev_pct}%, sell ≥ ${t.sell_edge_c}¢, scan ${t.interval_sec}s`;
+  }
+}
+
 function updateNtfyStatus(health) {
   const el = document.getElementById('ntfyStatus');
   if (!el) return;
@@ -391,6 +481,7 @@ async function refresh() {
     ]);
     document.getElementById('dryRunBadge').classList.toggle('hidden', !health.dry_run);
     updateNtfyStatus(health);
+    updateTelevoteMode(health);
     scanData = scan;
     positionsData = pos;
     renderEV();
@@ -430,16 +521,18 @@ function renderEV() {
     const btn = isNo
       ? 'bg-amber-600 active:bg-amber-700'
       : 'bg-green-600 active:bg-green-700';
+    const l = lineup(r.country);
     return `
     <div class="${card} border rounded-lg p-3">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <div class="flex items-baseline gap-2 flex-wrap">
-            <div class="font-bold text-lg">${r.country}</div>
+            <div class="font-bold text-lg">${l.flag} ${r.country}</div>
             ${r.event_label ? `<div class="text-[10px] uppercase tracking-wide text-blue-300 bg-blue-900/40 px-2 py-0.5 rounded">${r.event_label}</div>` : ''}
             <div class="text-[10px] uppercase tracking-wide ${badge} px-2 py-0.5 rounded">${side}</div>
           </div>
-          <div class="text-[11px] text-gray-400 num break-all">${r.ticker}</div>
+          ${lineupSnippetHtml(r.country)}
+          <div class="text-[11px] text-gray-400 num break-all mt-1">${r.ticker}</div>
           <div class="text-xs text-gray-300 mt-1 num">
             ${side} ask <span class="text-white">${fmtCents(r.kalshi_ask)}</span>
             &nbsp;•&nbsp; fair <span class="text-white">${fmtCents(r.true_prob)}</span>
@@ -526,16 +619,18 @@ function renderPositions() {
       </div>` : ''}
     `;
 
+    const l = lineup(p.country);
     return `
     <div class="bg-gray-800/60 border border-gray-700 rounded-lg p-3">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <div class="flex items-baseline gap-2 flex-wrap">
-            <div class="font-bold">${p.country}</div>
+            <div class="font-bold">${l.flag} ${p.country}</div>
             ${p.event_label ? `<div class="text-[10px] uppercase tracking-wide text-blue-300 bg-blue-900/40 px-2 py-0.5 rounded">${p.event_label}</div>` : ''}
             <div class="text-[10px] uppercase tracking-wide ${sideClass} px-2 py-0.5 rounded">${p.side.toUpperCase()}</div>
           </div>
-          <div class="text-[11px] text-gray-500 num break-all">${p.ticker}</div>
+          ${lineupSnippetHtml(p.country)}
+          <div class="text-[11px] text-gray-500 num break-all mt-1">${p.ticker}</div>
           <div class="text-xs text-gray-300 mt-1 num">
             ${Math.abs(p.position)} contracts
             &nbsp;•&nbsp; avg ${avgCost}
@@ -581,11 +676,12 @@ function renderAll() {
     const sideClass = r.side === 'no'
       ? 'text-orange-300/90 bg-orange-900/30'
       : 'text-emerald-300/90 bg-emerald-900/30';
+    const l = lineup(r.country);
     return `
     <div class="flex justify-between items-center px-3 py-2">
       <div class="min-w-0">
         <div class="flex items-center gap-2 flex-wrap">
-          <span>${r.country}</span>
+          <span>${l.flag} ${r.country}</span>
           ${r.event_label ? `<span class="text-[9px] uppercase tracking-wide text-blue-300/80 bg-blue-900/30 px-1.5 py-0.5 rounded">${r.event_label}</span>` : ''}
           <span class="text-[9px] uppercase tracking-wide ${sideClass} px-1.5 py-0.5 rounded">${side}</span>
         </div>
