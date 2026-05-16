@@ -19,8 +19,15 @@ from typing import Any
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 EUROVISION_EVENT_SLUG = "eurovision-winner-2026"
 
-# "Will <Country> win Eurovision 2026?" -> "<Country>"
-_QUESTION_RE = re.compile(r"^Will\s+(.+?)\s+win Eurovision 2026\??$", re.IGNORECASE)
+# Extract the country from any Eurovision per-country question shape:
+#   "Will Australia win Eurovision 2026?"
+#   "Will Australia be the Jury Winner in the Eurovision 2026 Grand Final?"
+#   "Will Albania win the televote for Eurovision 2026?"
+# Captures the run of words after "Will " and before " win" or " be the".
+_QUESTION_RE = re.compile(
+    r"^Will\s+(.+?)\s+(?:win|be the)\b",
+    re.IGNORECASE,
+)
 
 
 class PolymarketError(RuntimeError):
@@ -56,7 +63,7 @@ def _f(v, default: float | None = None) -> float | None:
 
 
 def fetch_event(slug: str = EUROVISION_EVENT_SLUG) -> dict:
-    """Fetch the Eurovision Winner event with all nested per-country markets."""
+    """Fetch a Polymarket event by slug, with all nested markets."""
     payload = _get(f"{GAMMA_BASE}/events?slug={slug}")
     if not payload:
         raise PolymarketError(f"No event found for slug={slug}")

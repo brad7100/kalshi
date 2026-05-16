@@ -1,7 +1,7 @@
 """
-Shared scanner logic: pull Kalshi + Polymarket Eurovision prices and
-compute EV. Used by both the CLI (eurovision_ev.py) and the FastAPI
-backend (main.py).
+Shared scanner logic: pull Kalshi + Polymarket Eurovision prices for the
+Winner, Jury, and Televote events, then compute EV. Used by both the CLI
+(eurovision_ev.py) and the FastAPI backend (main.py).
 """
 
 from __future__ import annotations
@@ -17,16 +17,39 @@ from polymarket_client import (
     parse_country_markets,
 )
 
-KALSHI_EVENT_URL = (
-    "https://api.elections.kalshi.com/trade-api/v2/markets"
-    "?event_ticker=KXEUROVISION-26&limit=200&status=open"
-)
+KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2/markets"
 
-# Kalshi ticker suffix -> internal country name
+# Each event we support. Adding more (Top N, Last Place, semifinals) is just
+# a matter of finding the Kalshi event_ticker + Polymarket slug pair.
+EVENTS: list[dict[str, str]] = [
+    {
+        "key": "winner",
+        "label": "Winner",
+        "kalshi_event": "KXEUROVISION-26",
+        "polymarket_slug": "eurovision-winner-2026",
+    },
+    {
+        "key": "jury",
+        "label": "Jury",
+        "kalshi_event": "KXEUROVISIONJURY-26",
+        "polymarket_slug": "eurovision-2026-jury-winner",
+    },
+    {
+        "key": "televote",
+        "label": "Televote",
+        "kalshi_event": "KXEUROVISIONTELEV-26",
+        "polymarket_slug": "eurovision-2026-televote-winner",
+    },
+]
+
+# Kalshi ticker suffix -> internal country name. The televote event uses
+# CYP for Cyprus while the winner event uses CYR — both map to the same
+# country.
 TICKER_TO_COUNTRY = {
     "ALB": "Albania", "ARM": "Armenia", "AUS": "Australia", "AUST": "Austria",
     "AZE": "Azerbaijan", "BEL": "Belgium", "BUL": "Bulgaria", "CRO": "Croatia",
-    "CYR": "Cyprus", "CZE": "Czechia", "DEN": "Denmark", "EST": "Estonia",
+    "CYR": "Cyprus", "CYP": "Cyprus",
+    "CZE": "Czechia", "DEN": "Denmark", "EST": "Estonia",
     "FIN": "Finland", "FRA": "France", "GEO": "Georgia", "GER": "Germany",
     "GRE": "Greece", "ISR": "Israel", "ITA": "Italy", "LAT": "Latvia",
     "LIT": "Lithuania", "LUX": "Luxembourg", "MAL": "Malta", "MOL": "Moldova",
@@ -34,7 +57,6 @@ TICKER_TO_COUNTRY = {
     "ROM": "Romania", "SAN": "San Marino", "SER": "Serbia", "SWE": "Sweden",
     "SWI": "Switzerland", "UKR": "Ukraine", "UNI": "United Kingdom",
 }
-COUNTRY_TO_TICKER = {v: k for k, v in TICKER_TO_COUNTRY.items()}
 
 POLYMARKET_ALIASES = {
     "Czech Republic": "Czechia",
@@ -64,10 +86,10 @@ _BROWSER_UA = (
 )
 
 
-def fetch_kalshi_public() -> dict:
+def fetch_kalshi_event(event_ticker: str) -> dict:
+    url = f"{KALSHI_BASE}?event_ticker={event_ticker}&limit=200&status=open"
     req = urllib.request.Request(
-        KALSHI_EVENT_URL,
-        headers={"Accept": "application/json", "User-Agent": _BROWSER_UA},
+        url, headers={"Accept": "application/json", "User-Agent": _BROWSER_UA}
     )
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read())
@@ -93,8 +115,8 @@ def parse_kalshi(payload: dict) -> dict[str, dict]:
 
 # ---- Polymarket -----------------------------------------------------------
 
-def fetch_polymarket() -> tuple[dict[str, dict], dict[str, Any]]:
-    event = fetch_event()
+def fetch_polymarket(slug: str) -> tuple[dict[str, dict], dict[str, Any]]:
+    event = fetch_event(slug)
     raw = parse_country_markets(event)
     poly = {normalize_country(k): v for k, v in raw.items()}
     return poly, event
@@ -158,30 +180,47 @@ def compute_rows(kalshi: dict, poly: dict, contracts: int,
             "ev_per_dollar": ev_per_contract / yes_ask if yes_ask else 0.0,
             "fee_per_contract": fee,
         })
-    rows.sort(key=lambda r: r["ev_per_dollar"], reverse=True)
     return rows
 
 
 def run_scan(contracts: int = 100, price_side: str = "mid") -> dict:
-    """One-shot scan. Returns a JSON-serializable dict."""
-    errors = []
-    try:
-        kalshi = parse_kalshi(fetch_kalshi_public())
-    except Exception as e:
-        kalshi = {}
-        errors.append(f"kalshi: {e}")
-    try:
-        poly, event = fetch_polymarket()
-        event_title = event.get("title", "")
-    except PolymarketError as e:
-        poly, event_title = {}, ""
-        errors.append(f"polymarket: {e}")
-    rows = compute_rows(kalshi, poly, contracts, price_side)
+    """Scan every configured event and return a unified row set. Each row
+    carries event_key/event_label so the UI can group or label by event.
+    Errors per event are isolated — a failure on one doesn't kill the rest.
+    """
+    all_rows: list[dict] = []
+    events_info: list[dict] = []
+    errors: list[str] = []
+    for ev in EVENTS:
+        try:
+            kalshi = parse_kalshi(fetch_kalshi_event(ev["kalshi_event"]))
+        except Exception as e:
+            errors.append(f"kalshi {ev['key']}: {e}")
+            kalshi = {}
+        try:
+            poly, poly_event = fetch_polymarket(ev["polymarket_slug"])
+        except PolymarketError as e:
+            errors.append(f"polymarket {ev['key']}: {e}")
+            poly, poly_event = {}, {}
+        rows = compute_rows(kalshi, poly, contracts, price_side)
+        for r in rows:
+            r["event_key"] = ev["key"]
+            r["event_label"] = ev["label"]
+        all_rows.extend(rows)
+        events_info.append({
+            "key": ev["key"],
+            "label": ev["label"],
+            "kalshi_event_ticker": ev["kalshi_event"],
+            "polymarket_slug": ev["polymarket_slug"],
+            "kalshi_count": len(kalshi),
+            "poly_count": len(poly),
+            "row_count": len(rows),
+            "poly_event_title": poly_event.get("title", "") if poly_event else "",
+        })
+    all_rows.sort(key=lambda r: r["ev_per_dollar"], reverse=True)
     return {
-        "rows": rows,
-        "kalshi_count": len(kalshi),
-        "poly_count": len(poly),
-        "poly_event_title": event_title,
+        "rows": all_rows,
+        "events": events_info,
         "contracts": contracts,
         "price_side": price_side,
         "errors": errors,

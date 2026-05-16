@@ -86,7 +86,7 @@ def _label_for_ticker(ticker: str) -> tuple[str, str]:
     tail = series.replace("KXEUROVISION", "", 1)
     if tail.startswith("JURY"):
         return ("Jury", country)
-    if "TELEVOTE" in tail or tail.startswith("TV") or "TELE" in tail:
+    if tail.startswith("TELEV") or "TELEVOTE" in tail or "TELE" in tail:
         return ("Televote", country)
     if tail.startswith("TOP"):
         # e.g. TOP10, TOP5, TOP3
