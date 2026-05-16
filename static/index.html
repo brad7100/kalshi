@@ -17,11 +17,14 @@
 <body class="bg-gray-900 text-gray-100 min-h-screen pb-24">
 
 <header class="sticky top-0 z-30 bg-gray-800/95 backdrop-blur border-b border-gray-700 px-4 py-3 flex items-center justify-between">
-  <div>
+  <div class="min-w-0">
     <div class="text-sm font-semibold">Eurovision 2026 EV</div>
-    <div id="status" class="text-[11px] text-gray-400 num">Loading...</div>
+    <div class="text-[11px] text-gray-400 num flex gap-2 flex-wrap">
+      <span id="clock" class="text-white"></span>
+      <span id="status">Loading...</span>
+    </div>
   </div>
-  <div class="flex items-center gap-2">
+  <div class="flex items-center gap-2 shrink-0">
     <span id="televoteBadge" class="hidden text-[10px] font-bold bg-fuchsia-500 text-black px-2 py-1 rounded animate-pulse">LIVE</span>
     <span id="dryRunBadge" class="hidden text-[10px] font-bold bg-yellow-600 text-black px-2 py-1 rounded">DRY-RUN</span>
     <button id="settingsBtn" class="bg-gray-700 active:bg-gray-600 px-3 py-2 rounded text-sm">⚙</button>
@@ -129,6 +132,13 @@ let scanData = null;
 let positionsData = null;
 let currentIntent = null;
 let currentToken = null;
+let maxOrderUsd = 50;       // updated from /health
+let lastHealth = null;
+
+function updateClock() {
+  const el = document.getElementById('clock');
+  if (el) el.textContent = new Date().toLocaleTimeString();
+}
 
 // ---- Eurovision 2026 lineup ----------------------------------------------
 // Source: Wikipedia (https://en.wikipedia.org/wiki/Eurovision_Song_Contest_2026)
@@ -479,6 +489,8 @@ async function refresh() {
       fetchJSON('/api/scan?contracts=100&price_side=mid'),
       fetchJSON('/api/positions'),
     ]);
+    lastHealth = health;
+    if (health.max_order_usd != null) maxOrderUsd = health.max_order_usd;
     document.getElementById('dryRunBadge').classList.toggle('hidden', !health.dry_run);
     updateNtfyStatus(health);
     updateTelevoteMode(health);
@@ -568,10 +580,29 @@ function renderPositions() {
     return;
   }
   const d = positionsData.debug || {};
+  const cash = positionsData.cash_available_dollars ?? positionsData.balance_dollars ?? 0;
+  const portfolio = positionsData.portfolio_value_dollars ?? 0;
+  const total = positionsData.total_account_dollars ?? (cash + portfolio);
   const debugLine = d.kalshi_returned != null
-    ? `&nbsp;•&nbsp; <span class="text-gray-500 num">Kalshi sent ${d.kalshi_returned}, showing ${d.shown} (dropped zero=${d.dropped_zero}, non-Eurovision=${d.dropped_non_eurovision})</span>`
+    ? `<div class="text-[10px] text-gray-500 num mt-0.5">Kalshi sent ${d.kalshi_returned}, showing ${d.shown} (dropped zero=${d.dropped_zero}, non-Eurovision=${d.dropped_non_eurovision})</div>`
     : '';
-  bal.innerHTML = `Balance: <span class="text-white font-semibold num">$${(positionsData.balance_dollars || 0).toFixed(2)}</span>${debugLine}`;
+  bal.innerHTML = `
+    <div class="grid grid-cols-3 gap-1.5">
+      <div class="bg-gray-900/70 rounded px-2 py-1.5">
+        <div class="text-[10px] text-gray-400 uppercase tracking-wide">Cash available</div>
+        <div class="font-semibold num text-base text-white">$${cash.toFixed(2)}</div>
+      </div>
+      <div class="bg-gray-900/70 rounded px-2 py-1.5">
+        <div class="text-[10px] text-gray-400 uppercase tracking-wide">Portfolio</div>
+        <div class="font-semibold num text-base text-white">$${portfolio.toFixed(2)}</div>
+      </div>
+      <div class="bg-gray-900/70 rounded px-2 py-1.5">
+        <div class="text-[10px] text-gray-400 uppercase tracking-wide">Total</div>
+        <div class="font-semibold num text-base text-white">$${total.toFixed(2)}</div>
+      </div>
+    </div>
+    ${debugLine}
+  `;
   const ps = positionsData.positions || [];
   if (!ps.length) {
     const sampleKeys = (d.sample_position_keys || []).join(', ') || '(no positions returned)';
@@ -736,8 +767,25 @@ function openBuy(row) {
              class="w-full mt-1 bg-gray-900 border border-gray-700 rounded px-2 py-2 text-base num" />
     </label>
     ${dollarPickerHtml(priceC, null)}
+    <div id="capWarning" class="hidden mt-3 bg-orange-900/40 border border-orange-700 rounded p-2 text-xs">
+      <div class="text-orange-200 font-semibold">Notional exceeds $${maxOrderUsd.toFixed(0)} cap</div>
+      <label class="flex items-center gap-2 mt-1 text-orange-100">
+        <input id="overrideCap" type="checkbox" class="w-4 h-4" />
+        <span>I confirm — place this larger buy anyway</span>
+      </label>
+    </div>
   `);
   wireDollarPicker();
+  const recomputeCap = () => {
+    const count = parseInt(document.getElementById('orderCount').value, 10) || 0;
+    const notional = (count * priceC) / 100;
+    const warn = document.getElementById('capWarning');
+    if (notional > maxOrderUsd) warn.classList.remove('hidden');
+    else { warn.classList.add('hidden'); const cb = document.getElementById('overrideCap'); if (cb) cb.checked = false; }
+  };
+  document.getElementById('orderCount').addEventListener('input', recomputeCap);
+  document.querySelectorAll('.dollarBtn').forEach(b => b.addEventListener('click', () => setTimeout(recomputeCap, 0)));
+  recomputeCap();
 }
 
 function openSell(p) {
@@ -792,12 +840,21 @@ document.getElementById('modalQuoteBtn').addEventListener('click', async () => {
   if (!currentIntent) return;
   const qty = parseInt(document.getElementById('orderCount').value, 10);
   if (!qty || qty <= 0) { setResult('Invalid quantity', 'red'); return; }
+  // Cap-bypass checkbox: only relevant for BUYs over the cap; sells ignore.
+  const overrideEl = document.getElementById('overrideCap');
+  const allow_over_cap = !!(overrideEl && overrideEl.checked);
+  const capWarn = document.getElementById('capWarning');
+  const warnVisible = capWarn && !capWarn.classList.contains('hidden');
+  if (currentIntent.action === 'buy' && warnVisible && !allow_over_cap) {
+    setResult('Tick the confirmation checkbox to place a buy above the cap.', 'red');
+    return;
+  }
   setResult('Quoting...', 'yellow');
   try {
     const quote = await fetchJSON('/api/recommend', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...currentIntent, count: qty }),
+      body: JSON.stringify({ ...currentIntent, count: qty, allow_over_cap }),
     });
     currentToken = quote.token;
     setResult(`
@@ -916,6 +973,8 @@ document.getElementById('testNtfyBtn').addEventListener('click', async () => {
 });
 
 loadSettings();
+updateClock();
+setInterval(updateClock, 1000);
 refresh();
 setInterval(refresh, 20000);
 </script>

@@ -363,6 +363,8 @@ def health():
             "sell_edge_c": sell_c,
             "interval_sec": interval,
         },
+        "max_order_usd": MAX_ORDER_USD,
+        "server_time_utc": datetime.utcnow().isoformat() + "Z",
     }
 
 
@@ -543,10 +545,18 @@ def api_positions(_: str = Depends(require_auth)):
         })
     # Sort: biggest absolute position first
     enriched.sort(key=lambda p: abs(p["position"]), reverse=True)
+    # Kalshi /portfolio/balance returns:
+    #   balance         (int, cents) — cash available for trading
+    #   portfolio_value (int, cents) — market value of open positions
+    cash_cents = balance.get("balance") or 0
+    portfolio_value_cents = balance.get("portfolio_value") or 0
     return {
         "connected": True,
-        "balance_cents": balance.get("balance"),
-        "balance_dollars": (balance.get("balance") or 0) / 100,
+        "balance_cents": cash_cents,
+        "balance_dollars": cash_cents / 100,
+        "cash_available_dollars": cash_cents / 100,
+        "portfolio_value_dollars": portfolio_value_cents / 100,
+        "total_account_dollars": (cash_cents + portfolio_value_cents) / 100,
         "positions": enriched,
         "debug": {
             "kalshi_returned": len(raw_positions),
@@ -567,6 +577,11 @@ class RecommendBody(BaseModel):
     action: str = Field(pattern="^(buy|sell)$")
     count: int = Field(gt=0, le=10000)
     limit_price_cents: int | None = Field(default=None, ge=1, le=99)
+    # If true, skip the MAX_ORDER_USD cap on BUY orders. Required for the
+    # frontend to send large buys that exceed the per-order notional cap.
+    # SELL orders ignore the cap regardless (closing positions never gets
+    # blocked).
+    allow_over_cap: bool = False
 
 
 @app.post("/api/recommend")
@@ -598,12 +613,17 @@ def api_recommend(body: RecommendBody, _: str = Depends(require_auth)):
         px = body.limit_price_cents
 
     notional_dollars = (px / 100) * body.count
-    if notional_dollars > MAX_ORDER_USD:
-        raise HTTPException(
-            400,
-            f"Order notional ${notional_dollars:.2f} exceeds MAX_ORDER_USD "
-            f"(${MAX_ORDER_USD:.2f}). Reduce size or raise the limit."
-        )
+    # Cap policy:
+    #   - SELL: never blocked (closing positions should always be possible)
+    #   - BUY:  blocked above MAX_ORDER_USD unless allow_over_cap=true
+    if body.action == "buy" and not body.allow_over_cap:
+        if notional_dollars > MAX_ORDER_USD:
+            raise HTTPException(
+                400,
+                f"Order notional ${notional_dollars:.2f} exceeds MAX_ORDER_USD "
+                f"(${MAX_ORDER_USD:.2f}). Re-send with allow_over_cap=true to "
+                "override."
+            )
 
     token = uuid.uuid4().hex
     pending = {
@@ -616,6 +636,7 @@ def api_recommend(body: RecommendBody, _: str = Depends(require_auth)):
         "count": body.count,
         "limit_price_cents": px,
         "notional_dollars": notional_dollars,
+        "over_cap": body.action == "buy" and notional_dollars > MAX_ORDER_USD,
         "ev_per_dollar_at_quote": row["ev_per_dollar"],
         "true_prob_at_quote": row["true_prob"],
         "kalshi_ask_at_quote": row["kalshi_ask"],
