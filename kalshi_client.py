@@ -27,7 +27,11 @@ try:
 except ImportError:
     _HAS_CRYPTO = False
 
-API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+# API_HOST is the bare host; API_PATH_PREFIX is included in the URL AND in
+# the signed message (Kalshi signature is computed over the full path,
+# e.g. /trade-api/v2/portfolio/balance — NOT the suffix alone).
+API_HOST = "https://api.elections.kalshi.com"
+API_PATH_PREFIX = "/trade-api/v2"
 
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -76,11 +80,13 @@ class KalshiClient:
     def configured(self) -> bool:
         return self._key is not None and bool(self.key_id)
 
-    def _sign(self, method: str, path: str) -> tuple[str, str]:
+    def _sign(self, method: str, full_path: str) -> tuple[str, str]:
+        """Sign {timestamp_ms}{METHOD}{full_path} where full_path INCLUDES
+        the /trade-api/v2 prefix and EXCLUDES any query string."""
         if not self.configured:
             raise KalshiNotConfigured("Kalshi credentials missing")
         timestamp_ms = str(int(time.time() * 1000))
-        msg = f"{timestamp_ms}{method.upper()}{path}".encode("utf-8")
+        msg = f"{timestamp_ms}{method.upper()}{full_path}".encode("utf-8")
         signature = self._key.sign(
             msg,
             padding.PSS(
@@ -97,9 +103,11 @@ class KalshiClient:
                  timeout: float = 15.0) -> Any:
         if not self.configured:
             raise KalshiNotConfigured("Kalshi credentials missing")
-        # Sign path WITHOUT query string.
-        timestamp_ms, signature = self._sign(method, path)
-        url = f"{API_BASE}{path}"
+        # path is the endpoint suffix like "/portfolio/balance". The full
+        # path with /trade-api/v2 prefix is what gets signed AND requested.
+        full_path = API_PATH_PREFIX + path
+        timestamp_ms, signature = self._sign(method, full_path)
+        url = f"{API_HOST}{full_path}"
         if params:
             url += "?" + urllib.parse.urlencode(params)
         data = json.dumps(body).encode("utf-8") if body is not None else None
