@@ -71,8 +71,29 @@ else:
 
 # ---- ntfy push ------------------------------------------------------------
 
-_ntfy_last_alert_at: dict[str, float] = {}
+# Rising-edge state per key. Each entry:
+#   {"above": bool — was the trigger met on the previous tick,
+#    "last_fire_at": float — unix ts of last actual push}
+# Pushes fire only on the False->True transition (plus a min refire gap
+# as noise insurance). This kills the "same alert every cooldown" loop.
+_ntfy_alert_state: dict[str, dict] = {}
 _ntfy_stop = threading.Event()
+
+
+def _ntfy_should_fire(key: str, condition_met: bool) -> bool:
+    """Rising-edge with refire gap. Returns True iff we should push now."""
+    st = _ntfy_alert_state.setdefault(key, {"above": False, "last_fire_at": 0.0})
+    now = time.time()
+    if not condition_met:
+        st["above"] = False
+        return False
+    rising = not st["above"]
+    long_gap = now - st["last_fire_at"] > NTFY_COOLDOWN_SEC
+    st["above"] = True
+    if rising or long_gap:
+        st["last_fire_at"] = now
+        return True
+    return False
 
 
 def ntfy_send(message: str, *, title: str | None = None,
@@ -101,14 +122,6 @@ def ntfy_send(message: str, *, title: str | None = None,
         return False, str(e)
 
 
-def _ntfy_should_fire(key: str) -> bool:
-    now = time.time()
-    if now - _ntfy_last_alert_at.get(key, 0.0) < NTFY_COOLDOWN_SEC:
-        return False
-    _ntfy_last_alert_at[key] = now
-    return True
-
-
 def _check_opportunities_and_push() -> dict:
     """One pass: scan, find +EV buy signals and net-of-fee sell signals on
     held positions, push novel ones via ntfy. Returns a small summary."""
@@ -119,15 +132,16 @@ def _check_opportunities_and_push() -> dict:
         summary["errors"].append(f"scan: {e}")
         return summary
 
-    # BUY signals — each row is already (ticker, side); both YES and NO
-    # opportunities flow through the same path.
+    # BUY signals — each row drives a rising-edge state machine.
+    # We feed every (ticker,side) into _ntfy_should_fire so that the state
+    # tracker also sees signals dropping BELOW threshold (resets the edge
+    # so a future crossing can fire again).
     for r in scan_data.get("rows", []):
         ev_pct = (r.get("ev_per_dollar") or 0) * 100
-        if ev_pct < NTFY_BUY_EV_PCT:
-            continue
         side = r.get("side", "yes")
         key = f"{r['ticker']}:{side}:buy"
-        if not _ntfy_should_fire(key):
+        condition_met = ev_pct >= NTFY_BUY_EV_PCT
+        if not _ntfy_should_fire(key, condition_met):
             continue
         title = f"BUY {side.upper()} {r['event_label']} {r['country']} +{ev_pct:.1f}% EV"
         body = (f"{side.upper()} ask {(r['kalshi_ask']*100):.0f}c -> Poly "
@@ -173,10 +187,9 @@ def _check_opportunities_and_push() -> dict:
                 bid, int(abs(position_count)) or 100
             )
             net_edge = bid - fair - fee
-            if net_edge * 100 < NTFY_SELL_EDGE_C:
-                continue
             key = f"{ticker}:{position_side}:sell"
-            if not _ntfy_should_fire(key):
+            condition_met = net_edge * 100 >= NTFY_SELL_EDGE_C
+            if not _ntfy_should_fire(key, condition_met):
                 continue
             ev_label, ev_country = _label_for_ticker(ticker)
             title = (f"SELL {position_side.upper()} {ev_label} "

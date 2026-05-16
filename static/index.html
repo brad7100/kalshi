@@ -49,12 +49,13 @@
     </span>
   </label>
   <label class="flex items-center justify-between gap-3">
-    <span>Cooldown per ticker</span>
+    <span>Min refire gap (same opportunity)</span>
     <span class="flex items-center gap-1">
-      <input id="setCooldown" type="number" step="10" min="20" max="900" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
+      <input id="setCooldown" type="number" step="60" min="60" max="3600" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
       <span>s</span>
     </span>
   </label>
+  <div class="text-[10px] text-gray-500">Alerts fire on threshold *crossings* only — they stay silent while the condition keeps holding. This gap is a safety net against noise.</div>
   <label class="flex items-center justify-between gap-3">
     <span>Play sound</span>
     <input id="setSound" type="checkbox" class="w-5 h-5" />
@@ -69,7 +70,9 @@
   </div>
   <div class="flex flex-wrap gap-2">
     <button id="testNtfyBtn" class="flex-1 bg-amber-700 active:bg-amber-800 py-2 rounded text-xs">Send ntfy test push</button>
+    <button id="resetMutesBtn" class="flex-1 bg-gray-600 active:bg-gray-500 py-2 rounded text-xs">Reset muted alerts</button>
   </div>
+  <div id="muteCount" class="text-[11px] text-gray-400"></div>
   <div id="notifStatus" class="text-[11px] text-gray-400"></div>
   <div id="ntfyStatus" class="text-[11px] text-gray-400"></div>
 </div>
@@ -125,12 +128,37 @@ let currentToken = null;
 const settings = {
   buyEvPct: 1.5,        // alert when EV/$ >= this %
   sellEdgeC: 1.0,       // alert when bid - fair >= this many cents
-  cooldownSec: 120,
+  minRefireSec: 600,    // min seconds between fires of same key (safety net)
   soundOn: true,
   vibrateOn: true,
 };
-const lastAlertAt = {};   // ticker (+":sell") -> ms timestamp
+// Rising-edge alert state. For each key:
+//   { above: bool — was the trigger condition met on the previous tick?,
+//     lastFireAt: number — ms timestamp of last fire }
+// An alert only fires on the BELOW->ABOVE transition (plus a min refire
+// gap as a safety net for noise around the threshold).
+const alertState = {};
+let mutedAlerts = new Set();   // keys the user has explicitly silenced
 let audioCtx = null;
+
+function loadMutes() {
+  try {
+    const arr = JSON.parse(localStorage.getItem('ev_muted') || '[]');
+    mutedAlerts = new Set(arr);
+  } catch { mutedAlerts = new Set(); }
+}
+function saveMutes() {
+  localStorage.setItem('ev_muted', JSON.stringify([...mutedAlerts]));
+}
+function muteKey(key) {
+  mutedAlerts.add(key);
+  saveMutes();
+}
+function resetMutes() {
+  mutedAlerts.clear();
+  Object.keys(alertState).forEach(k => delete alertState[k]);
+  saveMutes();
+}
 
 function loadSettings() {
   try {
@@ -138,16 +166,17 @@ function loadSettings() {
   } catch {}
   document.getElementById('setBuyEV').value = settings.buyEvPct;
   document.getElementById('setSellC').value = settings.sellEdgeC;
-  document.getElementById('setCooldown').value = settings.cooldownSec;
+  document.getElementById('setCooldown').value = settings.minRefireSec;
   document.getElementById('setSound').checked = settings.soundOn;
   document.getElementById('setVibrate').checked = settings.vibrateOn;
   updateNotifStatus();
+  loadMutes();
 }
 
 function saveSettings() {
   settings.buyEvPct = parseFloat(document.getElementById('setBuyEV').value) || 0;
   settings.sellEdgeC = parseFloat(document.getElementById('setSellC').value) || 0;
-  settings.cooldownSec = parseInt(document.getElementById('setCooldown').value, 10) || 120;
+  settings.minRefireSec = parseInt(document.getElementById('setCooldown').value, 10) || 600;
   settings.soundOn = document.getElementById('setSound').checked;
   settings.vibrateOn = document.getElementById('setVibrate').checked;
   localStorage.setItem('ev_settings', JSON.stringify(settings));
@@ -173,62 +202,116 @@ function playBeep(kind) {
   } catch (e) { /* iOS pre-gesture: silently skip */ }
 }
 
-function showToast(message, kind) {
+function showToast(message, kind, muteKeyVal) {
   const wrap = document.getElementById('toasts');
   const colors = kind === 'sell'
     ? 'bg-red-900/90 border-red-500 text-red-100'
     : 'bg-green-900/90 border-green-500 text-green-100';
   const el = document.createElement('div');
-  el.className = `pointer-events-auto border rounded-lg px-3 py-2 shadow-lg text-sm font-medium ${colors} animate-pulse`;
-  el.innerHTML = message;
+  el.className = `pointer-events-auto border rounded-lg px-3 py-2 shadow-lg text-sm font-medium ${colors} animate-pulse flex items-start gap-2`;
+  el.innerHTML = `
+    <div class="flex-1 min-w-0">${message}</div>
+    <button class="shrink-0 text-[11px] bg-black/30 active:bg-black/50 px-2 py-1 rounded" data-mute>Mute</button>
+    <button class="shrink-0 text-[11px] bg-black/30 active:bg-black/50 px-2 py-1 rounded" data-close>×</button>
+  `;
+  el.querySelector('[data-mute]').addEventListener('click', () => {
+    if (muteKeyVal) muteKey(muteKeyVal);
+    el.style.opacity = '0';
+    el.style.transition = 'opacity 200ms';
+    setTimeout(() => el.remove(), 250);
+    updateMuteCount();
+  });
+  el.querySelector('[data-close]').addEventListener('click', () => {
+    el.style.opacity = '0';
+    el.style.transition = 'opacity 200ms';
+    setTimeout(() => el.remove(), 250);
+  });
   wrap.appendChild(el);
   setTimeout(() => { el.classList.remove('animate-pulse'); }, 1200);
-  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 600ms'; }, 8000);
-  setTimeout(() => { el.remove(); }, 9000);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 600ms'; }, 12000);
+  setTimeout(() => { el.remove(); }, 13000);
 }
 
-function fireAlert(key, kind, title, body) {
+/**
+ * Rising-edge alert. Fires only when the trigger condition newly becomes
+ * true (was below threshold last tick, now above), with a safety-net
+ * min refire gap. Returns true if it fired.
+ *
+ *   key           — unique identifier ("KXEUROVISION-26-AUS:yes:buy")
+ *   conditionMet  — boolean, is the trigger currently satisfied?
+ *   kind          — "buy" or "sell" (color/sound)
+ *   title, body   — alert content
+ */
+function fireAlert(key, conditionMet, kind, title, body) {
+  const st = alertState[key] || { above: false, lastFireAt: 0 };
   const now = Date.now();
-  if (lastAlertAt[key] && now - lastAlertAt[key] < settings.cooldownSec * 1000) return false;
-  lastAlertAt[key] = now;
+  if (!conditionMet) {
+    st.above = false;
+    alertState[key] = st;
+    return false;
+  }
+  if (mutedAlerts.has(key)) {
+    st.above = true;  // still track state but never fire
+    alertState[key] = st;
+    return false;
+  }
+  // conditionMet=true: only fire on rising edge OR if it's been a long time
+  const rising = !st.above;
+  const longGap = now - st.lastFireAt > settings.minRefireSec * 1000;
+  if (!rising && !longGap) {
+    st.above = true;
+    alertState[key] = st;
+    return false;
+  }
+  st.above = true;
+  st.lastFireAt = now;
+  alertState[key] = st;
   playBeep(kind);
   if (settings.vibrateOn && navigator.vibrate) {
     navigator.vibrate(kind === 'sell' ? [120, 80, 120, 80, 120] : [200, 100, 200]);
   }
-  showToast(`<b>${title}</b><br><span class="text-xs font-normal opacity-90">${body}</span>`, kind);
+  showToast(`<b>${title}</b><br><span class="text-xs font-normal opacity-90">${body}</span>`, kind, key);
   if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
-    try { new Notification(title, { body, tag: key, renotify: true }); } catch {}
+    try { new Notification(title, { body, tag: key, renotify: false }); } catch {}
   }
   return true;
 }
 
+function updateMuteCount() {
+  const el = document.getElementById('muteCount');
+  if (!el) return;
+  if (mutedAlerts.size === 0) {
+    el.textContent = 'No alerts muted.';
+  } else {
+    el.textContent = `${mutedAlerts.size} alert${mutedAlerts.size === 1 ? '' : 's'} muted.`;
+  }
+}
+
 function checkAlerts() {
   let fired = 0;
-  // BUY: rows where EV/$ crosses threshold. Each row carries side; YES
-  // and NO buy opportunities are tracked independently in the cooldown.
+  // BUY: every row in the scan emits a (key, conditionMet) signal. fireAlert
+  // tracks edge transitions internally so signals that stay True don't spam.
   for (const r of (scanData?.rows || [])) {
     const evPct = (r.ev_per_dollar || 0) * 100;
-    if (evPct >= settings.buyEvPct) {
-      const side = (r.side || 'yes').toUpperCase();
-      const title = `BUY ${side} ${r.event_label}: ${r.country} +${evPct.toFixed(1)}% EV`;
-      const body = `${side} ask ${(r.kalshi_ask*100).toFixed(0)}¢ vs fair ${(r.true_prob*100).toFixed(0)}¢ (${r.ticker})`;
-      if (fireAlert(`${r.ticker}:${r.side || 'yes'}:buy`, 'buy', title, body)) fired++;
-    }
+    const side = (r.side || 'yes').toUpperCase();
+    const key = `${r.ticker}:${r.side || 'yes'}:buy`;
+    const conditionMet = evPct >= settings.buyEvPct;
+    const title = `BUY ${side} ${r.event_label}: ${r.country} +${evPct.toFixed(1)}% EV`;
+    const body = `${side} ask ${(r.kalshi_ask*100).toFixed(0)}¢ vs fair ${(r.true_prob*100).toFixed(0)}¢ (${r.ticker})`;
+    if (fireAlert(key, conditionMet, 'buy', title, body)) fired++;
   }
-  // SELL: positions where (bid_of_held_side - fair_of_held_side) - sell_fee
-  // >= threshold cents. Works for YES and NO positions identically — the
-  // server already side-corrected the bid/fair fields.
+  // SELL: same logic for held positions.
   for (const p of (positionsData?.positions || [])) {
-    if (!p.position) continue;
-    if (p.sell_edge_net_per_contract == null) continue;
+    if (!p.position || p.sell_edge_net_per_contract == null) continue;
     const netEdgeC = p.sell_edge_net_per_contract * 100;
-    if (netEdgeC >= settings.sellEdgeC) {
-      const side = (p.side || 'yes').toUpperCase();
-      const title = `SELL ${side} ${p.event_label}: ${p.country} +${netEdgeC.toFixed(1)}¢ NET above fair`;
-      const body = `${side} bid ${(p.current_yes_bid*100).toFixed(0)}¢ vs fair ${(p.true_prob*100).toFixed(0)}¢, after ${(p.sell_fee_per_contract*100).toFixed(1)}¢ fee — ${Math.abs(p.position)} contracts (${p.ticker})`;
-      if (fireAlert(`${p.ticker}:${p.side || 'yes'}:sell`, 'sell', title, body)) fired++;
-    }
+    const side = (p.side || 'yes').toUpperCase();
+    const key = `${p.ticker}:${p.side || 'yes'}:sell`;
+    const conditionMet = netEdgeC >= settings.sellEdgeC;
+    const title = `SELL ${side} ${p.event_label}: ${p.country} +${netEdgeC.toFixed(1)}¢ NET above fair`;
+    const body = `${side} bid ${(p.current_yes_bid*100).toFixed(0)}¢ vs fair ${(p.true_prob*100).toFixed(0)}¢, after ${(p.sell_fee_per_contract*100).toFixed(1)}¢ fee — ${Math.abs(p.position)} contracts (${p.ticker})`;
+    if (fireAlert(key, conditionMet, 'sell', title, body)) fired++;
   }
+  updateMuteCount();
   return fired;
 }
 
@@ -415,9 +498,36 @@ function renderAll() {
   }).join('');
 }
 
+// Render a row of $-amount quick-pick buttons. priceCents = limit price in
+// cents (1–99). Each button picks `floor(amount * 100 / priceCents)` contracts.
+function dollarPickerHtml(priceCents, maxContracts) {
+  const amounts = [5, 10, 15, 20, 25, 50, 100];
+  const buttons = amounts.map(a => {
+    let n = Math.max(1, Math.floor((a * 100) / Math.max(1, priceCents)));
+    if (maxContracts != null) n = Math.min(n, maxContracts);
+    return `<button type="button" class="dollarBtn bg-gray-700 active:bg-gray-600 text-xs py-2 rounded num"
+              data-contracts="${n}">$${a}<br><span class="text-[10px] text-gray-400">${n}c</span></button>`;
+  }).join('');
+  return `
+    <div class="text-[11px] text-gray-400 mt-3">Quick size (at ${priceCents}¢ limit):</div>
+    <div class="grid grid-cols-4 gap-2 mt-1">${buttons}</div>
+  `;
+}
+
+function wireDollarPicker() {
+  document.querySelectorAll('.dollarBtn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const n = parseInt(btn.dataset.contracts, 10);
+      const inp = document.getElementById('orderCount');
+      if (inp) inp.value = n;
+    });
+  });
+}
+
 function openBuy(row) {
   const side = row.side || 'yes';
   currentIntent = { action: 'buy', side, ticker: row.ticker, country: row.country, count: 100 };
+  const priceC = Math.max(1, Math.round((row.kalshi_ask || 0.01) * 100));
   showModal(`BUY ${side.toUpperCase()} — ${row.country} (${row.event_label || ''})`, `
     <div class="grid grid-cols-2 gap-2 text-xs">
       <div>Ticker</div><div class="text-right num">${row.ticker}</div>
@@ -429,7 +539,9 @@ function openBuy(row) {
       <input id="orderCount" type="number" value="100" min="1" max="10000"
              class="w-full mt-1 bg-gray-900 border border-gray-700 rounded px-2 py-2 text-base num" />
     </label>
+    ${dollarPickerHtml(priceC, null)}
   `);
+  wireDollarPicker();
 }
 
 function openSell(p) {
@@ -437,18 +549,27 @@ function openSell(p) {
     action: 'sell', side: p.side === 'no' ? 'no' : 'yes',
     ticker: p.ticker, country: p.country, count: Math.abs(p.position),
   };
+  const priceC = Math.max(1, Math.round((p.current_yes_bid || 0.01) * 100));
+  const pos = Math.abs(p.position);
   showModal(`SELL ${p.side.toUpperCase()} — ${p.country}`, `
     <div class="grid grid-cols-2 gap-2 text-xs">
       <div>Ticker</div><div class="text-right num">${p.ticker}</div>
-      <div>Position</div><div class="text-right num">${Math.abs(p.position)} ${p.side.toUpperCase()}</div>
-      <div>Current bid</div><div class="text-right num">${fmtCents(p.current_yes_bid)}</div>
-      <div>Fair (Poly mid)</div><div class="text-right num">${fmtCents(p.true_prob)}</div>
+      <div>Position</div><div class="text-right num">${pos} ${p.side.toUpperCase()}</div>
+      <div>${p.side.toUpperCase()} bid</div><div class="text-right num">${fmtCents(p.current_yes_bid)}</div>
+      <div>Fair P(${p.side.toUpperCase()})</div><div class="text-right num">${fmtCents(p.true_prob)}</div>
     </div>
     <label class="block text-sm mt-2">Contracts to sell
-      <input id="orderCount" type="number" value="${Math.abs(p.position)}" min="1" max="${Math.abs(p.position)}"
+      <input id="orderCount" type="number" value="${pos}" min="1" max="${pos}"
              class="w-full mt-1 bg-gray-900 border border-gray-700 rounded px-2 py-2 text-base num" />
     </label>
+    ${dollarPickerHtml(priceC, pos)}
+    <div class="mt-1"><button type="button" id="sellAllBtn" class="text-xs underline text-gray-400">Sell all ${pos}</button></div>
   `);
+  wireDollarPicker();
+  document.getElementById('sellAllBtn')?.addEventListener('click', () => {
+    const inp = document.getElementById('orderCount');
+    if (inp) inp.value = pos;
+  });
 }
 
 function showModal(title, bodyHtml) {
@@ -569,6 +690,11 @@ document.getElementById('enableNotifBtn').addEventListener('click', async () => 
     await Notification.requestPermission();
   } catch {}
   updateNotifStatus();
+});
+
+document.getElementById('resetMutesBtn').addEventListener('click', () => {
+  resetMutes();
+  updateMuteCount();
 });
 
 document.getElementById('testNtfyBtn').addEventListener('click', async () => {
