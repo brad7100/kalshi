@@ -501,10 +501,14 @@ def api_positions(_: str = Depends(require_auth)):
             )
 
         # Aggregate position value:
-        #   sell_value_gross  = bid * |contracts|       (what the book offers)
-        #   sell_value_net    = sell_value_gross - (sell_fee * |contracts|)
-        #   fair_value        = true_prob * |contracts|  (intrinsic per Polymarket)
-        #   unrealized_pnl    = sell_value_net - cost_basis  (vs liquidate now)
+        #   sell_value_gross   = bid * |contracts|      (book offer right now)
+        #   sell_value_net     = sell_value_gross - (sell_fee * |contracts|)
+        #   fair_value         = true_prob * |contracts|  (intrinsic per Poly)
+        #   unrealized_pnl     = sell_value_net - cost_basis (liquidate vs paid)
+        #   potential_return   = |contracts| * $1 — gross payout if the held
+        #                        side settles correctly (every contract pays
+        #                        out $1.00 on the winning side at expiry).
+        #   profit_if_correct  = potential_return - cost_basis
         abs_count = abs(position_count)
         bid = row.get("kalshi_bid")
         fair = row.get("true_prob")
@@ -514,6 +518,11 @@ def api_positions(_: str = Depends(require_auth)):
             if sell_value_gross_dollars is not None else None
         )
         fair_value_dollars = fair * abs_count if fair is not None else None
+        potential_return_dollars = abs_count * 1.0
+        profit_if_correct_dollars = (
+            potential_return_dollars - exposure_dollars
+            if exposure_dollars else None
+        )
         unrealized_pnl_dollars = None
         unrealized_pnl_pct = None
         if sell_value_net_dollars is not None and exposure_dollars:
@@ -537,6 +546,8 @@ def api_positions(_: str = Depends(require_auth)):
             "sell_value_gross_dollars": sell_value_gross_dollars,
             "sell_value_net_dollars": sell_value_net_dollars,
             "fair_value_dollars": fair_value_dollars,
+            "potential_return_dollars": potential_return_dollars,
+            "profit_if_correct_dollars": profit_if_correct_dollars,
             "unrealized_pnl_dollars": unrealized_pnl_dollars,
             "unrealized_pnl_pct": unrealized_pnl_pct,
             "realized_pnl_dollars": realized_pnl_dollars,

@@ -729,6 +729,13 @@ function renderPositions() {
         ${pnlPct != null ? `<span class="${pnlColor}"> (${pnlSign}${pnlPct.toFixed(1)}%)</span>` : ''}
         <span class="text-[10px] text-gray-500">vs cost, after sell-fee</span>
       </div>` : ''}
+      ${p.potential_return_dollars != null ? `
+      <div class="mt-1 text-xs num bg-emerald-950/40 border border-emerald-800/60 rounded px-2 py-1.5 flex items-baseline gap-2 flex-wrap">
+        <span class="text-emerald-300 uppercase tracking-wide text-[10px] font-bold">Potential return</span>
+        <span class="text-emerald-200 font-bold text-sm">${usd(p.potential_return_dollars)}</span>
+        ${p.profit_if_correct_dollars != null ? `<span class="text-emerald-400/80 text-[11px]">+${usd(p.profit_if_correct_dollars)} profit</span>` : ''}
+        <span class="text-[10px] text-gray-500">if ${p.side.toUpperCase()} wins</span>
+      </div>` : ''}
     `;
 
     const l = lineup(p.country);
@@ -765,10 +772,11 @@ function renderPositions() {
     `<div class="space-y-2">${rows.map(renderPosCard).join('')}</div>`
   ).join('');
 
-  // Portfolio totals: sum sell-now, cost, fair across all positions
+  // Portfolio totals: sum sell-now, cost, fair, potential-return across all positions
   const totalSell = (ps || []).reduce((s, p) => s + (p.sell_value_net_dollars || 0), 0);
   const totalCost = (ps || []).reduce((s, p) => s + (p.exposure_dollars || 0), 0);
   const totalFair = (ps || []).reduce((s, p) => s + (p.fair_value_dollars || 0), 0);
+  const totalPotential = (ps || []).reduce((s, p) => s + (p.potential_return_dollars || 0), 0);
   const totalPnl = totalSell - totalCost;
   const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost * 100) : null;
   const pnlColor = totalPnl >= 0 ? 'text-green-400' : 'text-red-400';
@@ -781,6 +789,11 @@ function renderPositions() {
       &nbsp;•&nbsp; <span class="text-gray-400">cost:</span> <span>${dollarStr(totalCost)}</span>
       &nbsp;•&nbsp; <span class="text-gray-400">fair:</span> <span>${dollarStr(totalFair)}</span>
       &nbsp;•&nbsp; <span class="${pnlColor} font-bold">${pnlSign}${dollarStr(Math.abs(totalPnl))}${totalPnlPct != null ? ` (${pnlSign}${totalPnlPct.toFixed(1)}%)` : ''}</span>
+    </div>
+    <div class="mt-1 text-[11px] num bg-emerald-950/30 border border-emerald-800/40 rounded px-2 py-1">
+      <span class="text-emerald-300 uppercase tracking-wide text-[10px] font-bold">Max potential return</span>
+      <span class="text-emerald-200 font-bold ml-1">${dollarStr(totalPotential)}</span>
+      <span class="text-[10px] text-gray-500">if every position settles correctly</span>
     </div>
   `;
 }
