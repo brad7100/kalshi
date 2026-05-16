@@ -28,8 +28,11 @@
   </div>
 </header>
 
-<!-- Toasts (alerts) -->
-<div id="toasts" class="fixed top-16 left-2 right-2 z-40 space-y-2 pointer-events-none"></div>
+<!-- Toasts (alerts) — anchored to the BOTTOM so they never overlap the
+     sticky header or the tab nav. Padded above iPhone home indicator. -->
+<div id="toasts"
+     class="fixed bottom-6 left-2 right-2 z-40 space-y-2 pointer-events-none flex flex-col"
+     style="padding-bottom: env(safe-area-inset-bottom, 0px);"></div>
 
 <!-- Settings drawer -->
 <div id="settingsPanel" class="hidden bg-gray-800 border-b border-gray-700 px-4 py-3 text-sm space-y-3">
