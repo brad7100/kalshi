@@ -186,17 +186,29 @@ def api_positions(_: str = Depends(require_auth)):
     raw_positions = (positions_resp.get("market_positions")
                      or positions_resp.get("positions") or [])
     enriched = []
+    dropped_zero = 0
+    dropped_non_eurovision = 0
     for pos in raw_positions:
         ticker = pos.get("ticker") or ""
-        # Skip positions that are flat (count==0) — Kalshi often returns
-        # closed-out entries with position=0.
-        position_count = pos.get("position", 0)
+        # Kalshi may report position under several names depending on whether
+        # fractional trading is in use. Take the first non-zero value we find.
+        position_raw = (
+            pos.get("position")
+            or pos.get("position_fp")
+            or pos.get("market_position")
+            or 0
+        )
+        try:
+            position_count = float(position_raw)
+        except (TypeError, ValueError):
+            position_count = 0.0
         if position_count == 0:
+            dropped_zero += 1
             continue
         # Surface anything with EUROVISION in the ticker (covers KXEUROVISION,
         # KXEUROVISIONJURY, KXEUROVISIONTELEVOTE, KXEUROVISIONTOP10, etc.).
-        # If you want to show non-Eurovision positions too, drop this check.
         if "EUROVISION" not in ticker.upper():
+            dropped_non_eurovision += 1
             continue
 
         label_event, label_country = _label_for_ticker(ticker)
@@ -230,6 +242,14 @@ def api_positions(_: str = Depends(require_auth)):
         "balance_cents": balance.get("balance"),
         "balance_dollars": (balance.get("balance") or 0) / 100,
         "positions": enriched,
+        "debug": {
+            "kalshi_returned": len(raw_positions),
+            "shown": len(enriched),
+            "dropped_zero": dropped_zero,
+            "dropped_non_eurovision": dropped_non_eurovision,
+            "top_level_keys": sorted(positions_resp.keys()),
+            "sample_position_keys": sorted(raw_positions[0].keys()) if raw_positions else [],
+        },
     }
 
 

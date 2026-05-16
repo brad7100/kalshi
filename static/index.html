@@ -156,10 +156,19 @@ function renderPositions() {
     </div>`;
     return;
   }
-  bal.innerHTML = `Balance: <span class="text-white font-semibold num">$${(positionsData.balance_dollars || 0).toFixed(2)}</span>`;
+  const d = positionsData.debug || {};
+  const debugLine = d.kalshi_returned != null
+    ? `&nbsp;•&nbsp; <span class="text-gray-500 num">Kalshi sent ${d.kalshi_returned}, showing ${d.shown} (dropped zero=${d.dropped_zero}, non-Eurovision=${d.dropped_non_eurovision})</span>`
+    : '';
+  bal.innerHTML = `Balance: <span class="text-white font-semibold num">$${(positionsData.balance_dollars || 0).toFixed(2)}</span>${debugLine}`;
   const ps = positionsData.positions || [];
   if (!ps.length) {
-    el.innerHTML = '<div class="text-gray-500 text-sm py-8 text-center">No open Eurovision positions.</div>';
+    const sampleKeys = (d.sample_position_keys || []).join(', ') || '(no positions returned)';
+    el.innerHTML = `<div class="text-sm py-6 px-3 bg-gray-800/60 border border-gray-700 rounded">
+      <div class="text-gray-300 mb-2">No open Eurovision positions matched.</div>
+      <div class="text-[11px] text-gray-500 num">Kalshi response keys: ${(d.top_level_keys || []).join(', ') || '(none)'}</div>
+      <div class="text-[11px] text-gray-500 num mt-1">Sample position fields: ${sampleKeys}</div>
+    </div>`;
     return;
   }
   el.innerHTML = ps.map(p => {
