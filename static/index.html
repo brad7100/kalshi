@@ -209,14 +209,16 @@ function checkAlerts() {
       if (fireAlert(r.ticker + ':buy', 'buy', title, body)) fired++;
     }
   }
-  // SELL: positions where bid > fair value by threshold
+  // SELL: positions where (bid - fair) - sell_fee >= threshold cents.
+  // sell_edge_net_per_contract comes pre-computed from the server in
+  // dollars per contract; convert to cents for the threshold compare.
   for (const p of (positionsData?.positions || [])) {
     if (!p.position || p.position <= 0) continue;
-    if (p.current_yes_bid == null || p.true_prob == null) continue;
-    const edgeC = (p.current_yes_bid - p.true_prob) * 100;
-    if (edgeC >= settings.sellEdgeC) {
-      const title = `SELL ${p.event_label}: ${p.country} +${edgeC.toFixed(1)}¢ above fair`;
-      const body = `Bid ${(p.current_yes_bid*100).toFixed(0)}¢ vs fair ${(p.true_prob*100).toFixed(0)}¢ — ${Math.abs(p.position)} contracts (${p.ticker})`;
+    if (p.sell_edge_net_per_contract == null) continue;
+    const netEdgeC = p.sell_edge_net_per_contract * 100;
+    if (netEdgeC >= settings.sellEdgeC) {
+      const title = `SELL ${p.event_label}: ${p.country} +${netEdgeC.toFixed(1)}¢ NET above fair`;
+      const body = `Bid ${(p.current_yes_bid*100).toFixed(0)}¢ vs fair ${(p.true_prob*100).toFixed(0)}¢, after ${(p.sell_fee_per_contract*100).toFixed(1)}¢ fee — ${Math.abs(p.position)} contracts (${p.ticker})`;
       if (fireAlert(p.ticker + ':sell', 'sell', title, body)) fired++;
     }
   }

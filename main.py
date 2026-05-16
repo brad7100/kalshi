@@ -224,6 +224,22 @@ def api_positions(_: str = Depends(require_auth)):
         realized_pnl_dollars = _ff("realized_pnl_dollars")
         fees_paid_dollars = _ff("fees_paid_dollars")
 
+        # Sell-side economics (only meaningful for YES positions we hold).
+        # If we sell at current bid, the net edge vs Polymarket fair value
+        # is (bid - fair) - taker_fee_on_sell. Positive net = good to sell.
+        sell_edge_net_per_contract = None
+        sell_fee_per_contract = None
+        if (position_count > 0
+                and row.get("kalshi_bid") is not None
+                and row.get("true_prob") is not None
+                and row.get("kalshi_bid") > 0):
+            sell_fee_per_contract = scanner.kalshi_taker_fee_per_contract(
+                row["kalshi_bid"], int(abs(position_count)) or 100
+            )
+            sell_edge_net_per_contract = (
+                row["kalshi_bid"] - row["true_prob"] - sell_fee_per_contract
+            )
+
         enriched.append({
             "ticker": ticker,
             "country": label_country or ticker,
@@ -236,6 +252,8 @@ def api_positions(_: str = Depends(require_auth)):
             "current_yes_ask": row.get("kalshi_ask"),
             "ev_per_dollar": row.get("ev_per_dollar"),
             "true_prob": row.get("true_prob"),
+            "sell_edge_net_per_contract": sell_edge_net_per_contract,
+            "sell_fee_per_contract": sell_fee_per_contract,
             "realized_pnl_dollars": realized_pnl_dollars,
             "fees_paid_dollars": fees_paid_dollars,
             "raw": pos,
