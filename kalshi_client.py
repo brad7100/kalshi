@@ -138,9 +138,16 @@ class KalshiClient:
     def get_balance(self) -> dict:
         return self._request("GET", "/portfolio/balance")
 
-    def get_positions(self, limit: int = 200) -> dict:
-        return self._request("GET", "/portfolio/positions",
-                             params={"limit": limit})
+    def get_positions(self, limit: int = 200,
+                      count_filter: str = "position") -> dict:
+        """Fetch portfolio positions. count_filter='position' tells Kalshi
+        to return only markets where position_fp is non-zero (server-side
+        filter — avoids paging through every market the user has ever
+        touched)."""
+        params: dict[str, Any] = {"limit": limit}
+        if count_filter:
+            params["count_filter"] = count_filter
+        return self._request("GET", "/portfolio/positions", params=params)
 
     def get_orders(self, status: str = "resting", limit: int = 200) -> dict:
         return self._request("GET", "/portfolio/orders",

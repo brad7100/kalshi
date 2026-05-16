@@ -190,35 +190,39 @@ def api_positions(_: str = Depends(require_auth)):
     dropped_non_eurovision = 0
     for pos in raw_positions:
         ticker = pos.get("ticker") or ""
-        # Kalshi may report position under several names depending on whether
-        # fractional trading is in use. Take the first non-zero value we find.
-        position_raw = (
-            pos.get("position")
-            or pos.get("position_fp")
-            or pos.get("market_position")
-            or 0
-        )
-        try:
-            position_count = float(position_raw)
-        except (TypeError, ValueError):
-            position_count = 0.0
+        # Kalshi field names per official spec:
+        #   position_fp           - signed fractional contract count (string)
+        #   market_exposure_dollars - current $ notional (string, dollars)
+        #   realized_pnl_dollars  - realized P&L this market (string, dollars)
+        #   total_traded_dollars  - lifetime $ traded (string, dollars)
+        #   fees_paid_dollars     - lifetime fees this market (string, dollars)
+        # All "FixedPoint*" fields arrive as decimal strings like "100.5".
+        def _ff(key: str) -> float:
+            v = pos.get(key)
+            if v is None or v == "":
+                return 0.0
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+
+        position_count = _ff("position_fp") or _ff("position")  # fallback for older shape
         if position_count == 0:
             dropped_zero += 1
             continue
-        # Surface anything with EUROVISION in the ticker (covers KXEUROVISION,
-        # KXEUROVISIONJURY, KXEUROVISIONTELEVOTE, KXEUROVISIONTOP10, etc.).
         if "EUROVISION" not in ticker.upper():
             dropped_non_eurovision += 1
             continue
 
         label_event, label_country = _label_for_ticker(ticker)
         row = price_by_ticker.get(ticker, {})
-        # Kalshi position fields (cents): market_exposure = current notional
-        # held; total_traded = lifetime $ traded; realized_pnl; fees_paid.
-        market_exposure_cents = pos.get("market_exposure")
-        avg_cost_cents = None
-        if market_exposure_cents and position_count:
-            avg_cost_cents = market_exposure_cents / abs(position_count)
+
+        exposure_dollars = _ff("market_exposure_dollars")
+        # avg cost per contract, expressed in cents to match the rest of the UI
+        avg_cost_cents = (exposure_dollars * 100 / abs(position_count)
+                          if position_count else None)
+        realized_pnl_dollars = _ff("realized_pnl_dollars")
+        fees_paid_dollars = _ff("fees_paid_dollars")
 
         enriched.append({
             "ticker": ticker,
@@ -227,12 +231,13 @@ def api_positions(_: str = Depends(require_auth)):
             "position": position_count,
             "side": "yes" if position_count > 0 else "no",
             "avg_cost_cents": avg_cost_cents,
+            "exposure_dollars": exposure_dollars,
             "current_yes_bid": row.get("kalshi_bid"),
             "current_yes_ask": row.get("kalshi_ask"),
             "ev_per_dollar": row.get("ev_per_dollar"),
             "true_prob": row.get("true_prob"),
-            "realized_pnl_cents": pos.get("realized_pnl"),
-            "fees_paid_cents": pos.get("fees_paid"),
+            "realized_pnl_dollars": realized_pnl_dollars,
+            "fees_paid_dollars": fees_paid_dollars,
             "raw": pos,
         })
     # Sort: biggest absolute position first
