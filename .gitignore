@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.env
+.env.local
+.env.*.local
+
+# Kalshi credentials — never commit
+*.pem
+*.key
+kalshi_private_key*
+secrets.local.json
+
+# Runtime artifacts
+orders.log.jsonl
+.betfair_session.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

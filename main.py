@@ -1,0 +1,313 @@
+"""
+FastAPI app: live Kalshi/Polymarket Eurovision EV scanner + portfolio + order
+placement.
+
+DRY_RUN behavior:
+    - If env var DRY_RUN is "1" / "true" / unset, /api/order returns a
+      stubbed "Testing" response instead of hitting Kalshi.
+    - When ready to go live, set DRY_RUN=false in Railway env vars and
+      restart the service.
+
+Env vars:
+    APP_PASSWORD          shared password for HTTP Basic auth (required for
+                          public deploy; if unset, app runs open in dev mode)
+    KALSHI_KEY_ID         Kalshi API key ID
+    KALSHI_PRIVATE_KEY    Kalshi private key PEM (with literal newlines OR
+                          escaped \\n — both supported)
+    DRY_RUN               "true" (default) = stub orders; "false" = live
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import secrets
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+import scanner
+from kalshi_client import KalshiClient, KalshiError, KalshiNotConfigured
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("eurovision")
+
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")
+DRY_RUN = os.getenv("DRY_RUN", "true").lower() not in ("0", "false", "no", "off")
+MAX_ORDER_USD = float(os.getenv("MAX_ORDER_USD", "50"))
+
+if not APP_PASSWORD:
+    log.warning("APP_PASSWORD not set — app is OPEN. Do not deploy like this.")
+if DRY_RUN:
+    log.warning("DRY_RUN enabled — /api/order will NOT place real orders.")
+
+app = FastAPI(title="Eurovision EV Scanner", version="0.1")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=False,
+    allow_methods=["*"], allow_headers=["*"],
+)
+
+BASE_DIR = Path(__file__).parent
+STATIC_DIR = BASE_DIR / "static"
+ORDER_LOG_PATH = BASE_DIR / "orders.log.jsonl"
+
+kalshi = KalshiClient()
+
+# In-memory cache so a single tap-through doesn't re-fetch unnecessarily.
+_SCAN_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
+_PENDING_ORDERS: dict[str, dict] = {}  # confirmation tokens -> order details
+
+security = HTTPBasic(auto_error=False)
+
+
+def require_auth(creds: HTTPBasicCredentials | None = Depends(security)) -> str:
+    if not APP_PASSWORD:
+        return "dev"
+    if creds is None or not secrets.compare_digest(creds.password or "", APP_PASSWORD):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Auth required",
+            headers={"WWW-Authenticate": "Basic realm=\"Eurovision EV\""},
+        )
+    return creds.username or "user"
+
+
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "dry_run": DRY_RUN,
+        "kalshi_configured": kalshi.configured,
+        "auth_enabled": bool(APP_PASSWORD),
+    }
+
+
+@app.get("/")
+def index(_: str = Depends(require_auth)):
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+# Serve static files (icons etc.) under /static
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+# ---- /api/scan ------------------------------------------------------------
+
+@app.get("/api/scan")
+def api_scan(contracts: int = 100, price_side: str = "mid",
+             _: str = Depends(require_auth)):
+    # cache for 5s so a flurry of refreshes doesn't hammer upstreams
+    now = time.time()
+    cache_key = f"{contracts}:{price_side}"
+    cached = _SCAN_CACHE.get(cache_key)
+    if cached and now - cached["ts"] < 5.0:
+        return cached["data"]
+    data = scanner.run_scan(contracts=contracts, price_side=price_side)
+    data["fetched_at"] = datetime.utcnow().isoformat() + "Z"
+    _SCAN_CACHE[cache_key] = {"ts": now, "data": data}
+    return data
+
+
+# ---- /api/positions -------------------------------------------------------
+
+@app.get("/api/positions")
+def api_positions(_: str = Depends(require_auth)):
+    if not kalshi.configured:
+        return {
+            "connected": False,
+            "reason": "KALSHI_KEY_ID / KALSHI_PRIVATE_KEY not set",
+            "positions": [],
+            "balance": None,
+        }
+    try:
+        balance = kalshi.get_balance()
+        positions_resp = kalshi.get_positions(limit=200)
+    except KalshiNotConfigured as e:
+        return {"connected": False, "reason": str(e), "positions": [], "balance": None}
+    except KalshiError as e:
+        log.exception("kalshi positions fetch failed")
+        return {"connected": False, "reason": str(e), "positions": [], "balance": None}
+
+    # Enrich Kalshi positions with friendly country name + current prices
+    # so the UI can show "Australia: 100 contracts @ avg 24c (now 25c)".
+    scan = scanner.run_scan(contracts=100)
+    price_by_ticker = {r["ticker"]: r for r in scan.get("rows", [])}
+    raw_positions = positions_resp.get("market_positions") or positions_resp.get("positions") or []
+    enriched = []
+    for pos in raw_positions:
+        ticker = pos.get("ticker")
+        if not ticker or not ticker.startswith("KXEUROVISION-26-"):
+            continue
+        suffix = ticker.rsplit("-", 1)[-1]
+        country = scanner.TICKER_TO_COUNTRY.get(suffix, suffix)
+        row = price_by_ticker.get(ticker, {})
+        # Kalshi returns "position" (signed int, +ve = yes, -ve = no) and
+        # cost-basis fields. Field names vary slightly across endpoint versions.
+        position_count = pos.get("position", 0)
+        avg_price = (pos.get("market_exposure", 0) and
+                     pos.get("market_exposure", 0) / max(abs(position_count) or 1, 1)) or None
+        enriched.append({
+            "ticker": ticker,
+            "country": country,
+            "position": position_count,
+            "side": "yes" if position_count > 0 else ("no" if position_count < 0 else "flat"),
+            "avg_cost_cents": avg_price,
+            "current_yes_bid": row.get("kalshi_bid"),
+            "current_yes_ask": row.get("kalshi_ask"),
+            "ev_per_dollar": row.get("ev_per_dollar"),
+            "true_prob": row.get("true_prob"),
+            "raw": pos,
+        })
+    return {
+        "connected": True,
+        "balance_cents": balance.get("balance"),
+        "balance_dollars": (balance.get("balance") or 0) / 100,
+        "positions": enriched,
+    }
+
+
+# ---- /api/recommend -------------------------------------------------------
+
+class RecommendBody(BaseModel):
+    ticker: str
+    side: str = Field(pattern="^(yes|no)$")
+    action: str = Field(pattern="^(buy|sell)$")
+    count: int = Field(gt=0, le=10000)
+    limit_price_cents: int | None = Field(default=None, ge=1, le=99)
+
+
+@app.post("/api/recommend")
+def api_recommend(body: RecommendBody, _: str = Depends(require_auth)):
+    """Validate the proposed order and return a confirmation token.
+
+    The frontend MUST get a token from here before calling /api/order.
+    Token expires after 60s.
+    """
+    scan = scanner.run_scan(contracts=body.count)
+    row = next((r for r in scan["rows"] if r["ticker"] == body.ticker), None)
+    if not row:
+        raise HTTPException(404, f"Ticker {body.ticker} not in current scan")
+
+    # default to current ask for buy, current bid for sell
+    if body.limit_price_cents is None:
+        if body.action == "buy" and body.side == "yes":
+            px = int(round(row["kalshi_ask"] * 100))
+        elif body.action == "sell" and body.side == "yes":
+            px = int(round(row["kalshi_bid"] * 100))
+        elif body.action == "buy" and body.side == "no":
+            px = int(round((1 - row["kalshi_bid"]) * 100))
+        else:  # sell no
+            px = int(round((1 - row["kalshi_ask"]) * 100))
+        px = max(1, min(99, px))
+    else:
+        px = body.limit_price_cents
+
+    notional_dollars = (px / 100) * body.count
+    if notional_dollars > MAX_ORDER_USD:
+        raise HTTPException(
+            400,
+            f"Order notional ${notional_dollars:.2f} exceeds MAX_ORDER_USD "
+            f"(${MAX_ORDER_USD:.2f}). Reduce size or raise the limit."
+        )
+
+    token = uuid.uuid4().hex
+    pending = {
+        "token": token,
+        "created_at": time.time(),
+        "ticker": body.ticker,
+        "country": row["country"],
+        "side": body.side,
+        "action": body.action,
+        "count": body.count,
+        "limit_price_cents": px,
+        "notional_dollars": notional_dollars,
+        "ev_per_dollar_at_quote": row["ev_per_dollar"],
+        "true_prob_at_quote": row["true_prob"],
+        "kalshi_ask_at_quote": row["kalshi_ask"],
+        "fee_per_contract": row["fee_per_contract"],
+    }
+    _PENDING_ORDERS[token] = pending
+    return pending
+
+
+# ---- /api/order -----------------------------------------------------------
+
+class OrderBody(BaseModel):
+    token: str
+
+
+def _log_order(record: dict) -> None:
+    try:
+        with ORDER_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except OSError:
+        log.exception("failed to write order log")
+
+
+@app.post("/api/order")
+def api_order(body: OrderBody, _: str = Depends(require_auth)):
+    pending = _PENDING_ORDERS.get(body.token)
+    if not pending:
+        raise HTTPException(400, "Unknown or already-used confirmation token")
+    if time.time() - pending["created_at"] > 60:
+        _PENDING_ORDERS.pop(body.token, None)
+        raise HTTPException(400, "Confirmation token expired; re-quote and retry")
+    # one-shot: consume the token immediately
+    _PENDING_ORDERS.pop(body.token, None)
+
+    base_record = {
+        "ts": datetime.utcnow().isoformat() + "Z",
+        "dry_run": DRY_RUN,
+        "intent": pending,
+    }
+
+    if DRY_RUN:
+        record = {**base_record, "status": "dry_run", "message": "Testing"}
+        _log_order(record)
+        return {
+            "ok": True,
+            "dry_run": True,
+            "message": "Testing",
+            "would_have_sent": {
+                "ticker": pending["ticker"],
+                "side": pending["side"],
+                "action": pending["action"],
+                "count": pending["count"],
+                "yes_price_cents": pending["limit_price_cents"],
+            },
+        }
+
+    # ---- LIVE PATH (not reachable until DRY_RUN=false in env) ----
+    if not kalshi.configured:
+        raise HTTPException(503, "Kalshi credentials not configured")
+    client_order_id = uuid.uuid4().hex
+    try:
+        resp = kalshi.place_order(
+            ticker=pending["ticker"],
+            side=pending["side"],
+            action=pending["action"],
+            count=pending["count"],
+            yes_price_cents=pending["limit_price_cents"],
+            client_order_id=client_order_id,
+        )
+    except KalshiError as e:
+        record = {**base_record, "status": "error", "error": str(e)}
+        _log_order(record)
+        raise HTTPException(502, f"Kalshi rejected order: {e}")
+    record = {**base_record, "status": "placed",
+              "client_order_id": client_order_id, "kalshi_response": resp}
+    _log_order(record)
+    return {"ok": True, "dry_run": False, "kalshi": resp,
+            "client_order_id": client_order_id}
