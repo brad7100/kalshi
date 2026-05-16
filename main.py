@@ -64,6 +64,43 @@ ORDER_LOG_PATH = BASE_DIR / "orders.log.jsonl"
 
 kalshi = KalshiClient()
 
+
+def _label_for_ticker(ticker: str) -> tuple[str, str]:
+    """Turn a Kalshi ticker into (event_label, country_name). country_name is
+    "" if we can't decode it. Examples:
+        KXEUROVISION-26-AUS         -> ("Winner",   "Australia")
+        KXEUROVISIONJURY-26-FIN     -> ("Jury",     "Finland")
+        KXEUROVISIONTELEVOTE-26-ISR -> ("Televote", "Israel")
+        KXEUROVISIONTOP10-26-FIN    -> ("Top 10",   "Finland")
+    Heuristic — adapt as we learn the real Kalshi series tickers.
+    """
+    parts = ticker.split("-")
+    if not parts:
+        return ("", "")
+    series = parts[0].upper()
+    suffix = parts[-1] if len(parts) >= 3 else ""
+    country = scanner.TICKER_TO_COUNTRY.get(suffix, "")
+    if series == "KXEUROVISION":
+        return ("Winner", country)
+    # Strip the "KXEUROVISION" prefix off and decode the rest.
+    tail = series.replace("KXEUROVISION", "", 1)
+    if tail.startswith("JURY"):
+        return ("Jury", country)
+    if "TELEVOTE" in tail or tail.startswith("TV") or "TELE" in tail:
+        return ("Televote", country)
+    if tail.startswith("TOP"):
+        # e.g. TOP10, TOP5, TOP3
+        return (f"Top {tail.replace('TOP', '')}".strip(), country)
+    if "LAST" in tail:
+        return ("Last Place", country)
+    if "SEMI" in tail or tail.startswith("SF"):
+        return ("Semi-Final", country)
+    if "MARGIN" in tail:
+        return ("Margin", country)
+    if tail:
+        return (tail.title(), country)
+    return (series, country)
+
 # In-memory cache so a single tap-through doesn't re-fetch unnecessarily.
 _SCAN_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
 _PENDING_ORDERS: dict[str, dict] = {}  # confirmation tokens -> order details
@@ -140,36 +177,54 @@ def api_positions(_: str = Depends(require_auth)):
         log.exception("kalshi positions fetch failed")
         return {"connected": False, "reason": str(e), "positions": [], "balance": None}
 
-    # Enrich Kalshi positions with friendly country name + current prices
-    # so the UI can show "Australia: 100 contracts @ avg 24c (now 25c)".
+    # Enrich Kalshi positions with friendly label + current prices.
+    # We show every Eurovision-adjacent position the user holds, not just
+    # the main Winner market — they may also hold Jury / Televote / Top N
+    # / Semi-Final / Last Place positions under sibling Kalshi series.
     scan = scanner.run_scan(contracts=100)
     price_by_ticker = {r["ticker"]: r for r in scan.get("rows", [])}
-    raw_positions = positions_resp.get("market_positions") or positions_resp.get("positions") or []
+    raw_positions = (positions_resp.get("market_positions")
+                     or positions_resp.get("positions") or [])
     enriched = []
     for pos in raw_positions:
-        ticker = pos.get("ticker")
-        if not ticker or not ticker.startswith("KXEUROVISION-26-"):
-            continue
-        suffix = ticker.rsplit("-", 1)[-1]
-        country = scanner.TICKER_TO_COUNTRY.get(suffix, suffix)
-        row = price_by_ticker.get(ticker, {})
-        # Kalshi returns "position" (signed int, +ve = yes, -ve = no) and
-        # cost-basis fields. Field names vary slightly across endpoint versions.
+        ticker = pos.get("ticker") or ""
+        # Skip positions that are flat (count==0) — Kalshi often returns
+        # closed-out entries with position=0.
         position_count = pos.get("position", 0)
-        avg_price = (pos.get("market_exposure", 0) and
-                     pos.get("market_exposure", 0) / max(abs(position_count) or 1, 1)) or None
+        if position_count == 0:
+            continue
+        # Surface anything with EUROVISION in the ticker (covers KXEUROVISION,
+        # KXEUROVISIONJURY, KXEUROVISIONTELEVOTE, KXEUROVISIONTOP10, etc.).
+        # If you want to show non-Eurovision positions too, drop this check.
+        if "EUROVISION" not in ticker.upper():
+            continue
+
+        label_event, label_country = _label_for_ticker(ticker)
+        row = price_by_ticker.get(ticker, {})
+        # Kalshi position fields (cents): market_exposure = current notional
+        # held; total_traded = lifetime $ traded; realized_pnl; fees_paid.
+        market_exposure_cents = pos.get("market_exposure")
+        avg_cost_cents = None
+        if market_exposure_cents and position_count:
+            avg_cost_cents = market_exposure_cents / abs(position_count)
+
         enriched.append({
             "ticker": ticker,
-            "country": country,
+            "country": label_country or ticker,
+            "event_label": label_event,
             "position": position_count,
-            "side": "yes" if position_count > 0 else ("no" if position_count < 0 else "flat"),
-            "avg_cost_cents": avg_price,
+            "side": "yes" if position_count > 0 else "no",
+            "avg_cost_cents": avg_cost_cents,
             "current_yes_bid": row.get("kalshi_bid"),
             "current_yes_ask": row.get("kalshi_ask"),
             "ev_per_dollar": row.get("ev_per_dollar"),
             "true_prob": row.get("true_prob"),
+            "realized_pnl_cents": pos.get("realized_pnl"),
+            "fees_paid_cents": pos.get("fees_paid"),
             "raw": pos,
         })
+    # Sort: biggest absolute position first
+    enriched.sort(key=lambda p: abs(p["position"]), reverse=True)
     return {
         "connected": True,
         "balance_cents": balance.get("balance"),
