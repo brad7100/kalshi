@@ -443,6 +443,26 @@ def api_positions(_: str = Depends(require_auth)):
                 row["kalshi_bid"] - row["true_prob"] - sell_fee_per_contract
             )
 
+        # Aggregate position value:
+        #   sell_value_gross  = bid * |contracts|       (what the book offers)
+        #   sell_value_net    = sell_value_gross - (sell_fee * |contracts|)
+        #   fair_value        = true_prob * |contracts|  (intrinsic per Polymarket)
+        #   unrealized_pnl    = sell_value_net - cost_basis  (vs liquidate now)
+        abs_count = abs(position_count)
+        bid = row.get("kalshi_bid")
+        fair = row.get("true_prob")
+        sell_value_gross_dollars = bid * abs_count if bid is not None else None
+        sell_value_net_dollars = (
+            sell_value_gross_dollars - (sell_fee_per_contract or 0) * abs_count
+            if sell_value_gross_dollars is not None else None
+        )
+        fair_value_dollars = fair * abs_count if fair is not None else None
+        unrealized_pnl_dollars = None
+        unrealized_pnl_pct = None
+        if sell_value_net_dollars is not None and exposure_dollars:
+            unrealized_pnl_dollars = sell_value_net_dollars - exposure_dollars
+            unrealized_pnl_pct = (unrealized_pnl_dollars / exposure_dollars) * 100
+
         enriched.append({
             "ticker": ticker,
             "country": label_country or ticker,
@@ -457,6 +477,11 @@ def api_positions(_: str = Depends(require_auth)):
             "true_prob": row.get("true_prob"),          # P(held side wins)
             "sell_edge_net_per_contract": sell_edge_net_per_contract,
             "sell_fee_per_contract": sell_fee_per_contract,
+            "sell_value_gross_dollars": sell_value_gross_dollars,
+            "sell_value_net_dollars": sell_value_net_dollars,
+            "fair_value_dollars": fair_value_dollars,
+            "unrealized_pnl_dollars": unrealized_pnl_dollars,
+            "unrealized_pnl_pct": unrealized_pnl_pct,
             "realized_pnl_dollars": realized_pnl_dollars,
             "fees_paid_dollars": fees_paid_dollars,
             "raw": pos,

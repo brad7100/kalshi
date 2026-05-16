@@ -492,17 +492,52 @@ function renderPositions() {
   el.innerHTML = ps.map(p => {
     const avgCost = p.avg_cost_cents != null ? p.avg_cost_cents.toFixed(1) + 'c' : '-';
     const recognizedPrice = p.current_yes_ask != null;
+    const sideClass = p.side === 'no' ? 'text-amber-200 bg-amber-900/60' : 'text-emerald-200 bg-emerald-900/60';
+
+    // Aggregate $ values
+    const usd = v => v == null ? '–' : '$' + v.toFixed(2);
+    const pnl = p.unrealized_pnl_dollars;
+    const pnlPct = p.unrealized_pnl_pct;
+    const pnlColor = pnl == null
+      ? 'text-gray-400'
+      : (pnl >= 0 ? 'text-green-400' : 'text-red-400');
+    const pnlSign = pnl == null ? '' : (pnl >= 0 ? '+' : '');
+    const valueBlock = `
+      <div class="mt-2 grid grid-cols-3 gap-1.5 text-[11px]">
+        <div class="bg-gray-900/70 rounded px-2 py-1">
+          <div class="text-gray-400 text-[10px] uppercase tracking-wide">Sell now</div>
+          <div class="font-semibold num text-white">${usd(p.sell_value_net_dollars)}</div>
+        </div>
+        <div class="bg-gray-900/70 rounded px-2 py-1">
+          <div class="text-gray-400 text-[10px] uppercase tracking-wide">Cost</div>
+          <div class="font-semibold num text-white">${usd(p.exposure_dollars)}</div>
+        </div>
+        <div class="bg-gray-900/70 rounded px-2 py-1">
+          <div class="text-gray-400 text-[10px] uppercase tracking-wide">Fair</div>
+          <div class="font-semibold num text-white">${usd(p.fair_value_dollars)}</div>
+        </div>
+      </div>
+      ${pnl != null ? `
+      <div class="mt-1 text-xs num">
+        <span class="text-gray-400">Unrealized:</span>
+        <span class="${pnlColor} font-bold">${pnlSign}${usd(Math.abs(pnl))}</span>
+        ${pnlPct != null ? `<span class="${pnlColor}"> (${pnlSign}${pnlPct.toFixed(1)}%)</span>` : ''}
+        <span class="text-[10px] text-gray-500">vs cost, after sell-fee</span>
+      </div>` : ''}
+    `;
+
     return `
     <div class="bg-gray-800/60 border border-gray-700 rounded-lg p-3">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
-          <div class="flex items-baseline gap-2">
+          <div class="flex items-baseline gap-2 flex-wrap">
             <div class="font-bold">${p.country}</div>
             ${p.event_label ? `<div class="text-[10px] uppercase tracking-wide text-blue-300 bg-blue-900/40 px-2 py-0.5 rounded">${p.event_label}</div>` : ''}
+            <div class="text-[10px] uppercase tracking-wide ${sideClass} px-2 py-0.5 rounded">${p.side.toUpperCase()}</div>
           </div>
           <div class="text-[11px] text-gray-500 num break-all">${p.ticker}</div>
           <div class="text-xs text-gray-300 mt-1 num">
-            ${Math.abs(p.position)} contracts ${p.side.toUpperCase()}
+            ${Math.abs(p.position)} contracts
             &nbsp;•&nbsp; avg ${avgCost}
             ${recognizedPrice ? `&nbsp;•&nbsp; now ${fmtCents(p.current_yes_ask)}` : '&nbsp;•&nbsp; <span class="text-yellow-400">no price feed</span>'}
             ${p.true_prob != null ? `&nbsp;•&nbsp; fair ${fmtCents(p.true_prob)}` : ''}
@@ -514,8 +549,28 @@ function renderPositions() {
                   onclick='openSell(${JSON.stringify(p).replace(/'/g, "&apos;")})'>SELL</button>
         </div>
       </div>
+      ${valueBlock}
     </div>`;
   }).join('');
+
+  // Portfolio totals: sum sell-now, cost, fair across all positions
+  const totalSell = (ps || []).reduce((s, p) => s + (p.sell_value_net_dollars || 0), 0);
+  const totalCost = (ps || []).reduce((s, p) => s + (p.exposure_dollars || 0), 0);
+  const totalFair = (ps || []).reduce((s, p) => s + (p.fair_value_dollars || 0), 0);
+  const totalPnl = totalSell - totalCost;
+  const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost * 100) : null;
+  const pnlColor = totalPnl >= 0 ? 'text-green-400' : 'text-red-400';
+  const pnlSign = totalPnl >= 0 ? '+' : '';
+  const dollarStr = v => '$' + v.toFixed(2);
+  bal.innerHTML += `
+    <div class="mt-2 text-[11px] num">
+      <span class="text-gray-400">Positions sell-now:</span>
+      <span class="text-white font-semibold">${dollarStr(totalSell)}</span>
+      &nbsp;•&nbsp; <span class="text-gray-400">cost:</span> <span>${dollarStr(totalCost)}</span>
+      &nbsp;•&nbsp; <span class="text-gray-400">fair:</span> <span>${dollarStr(totalFair)}</span>
+      &nbsp;•&nbsp; <span class="${pnlColor} font-bold">${pnlSign}${dollarStr(Math.abs(totalPnl))}${totalPnlPct != null ? ` (${pnlSign}${totalPnlPct.toFixed(1)}%)` : ''}</span>
+    </div>
+  `;
 }
 
 function renderAll() {
