@@ -187,14 +187,20 @@ function lineup(country) {
   return { iso: l[0], flag: l[1], artist: l[2], song: l[3] };
 }
 
-function youtubeUrl(country, artist, song) {
-  const q = encodeURIComponent(`Eurovision 2026 ${country} ${artist} ${song}`);
-  return `https://www.youtube.com/results?search_query=${q}`;
+function countrySlug(country) {
+  return country.toLowerCase().replace(/ /g, '-');
 }
 
-function wikiUrl(country) {
-  const slug = encodeURIComponent(country.replace(/ /g, '_'));
-  return `https://en.wikipedia.org/wiki/${slug}_in_the_Eurovision_Song_Contest_2026`;
+function participantUrl(country) {
+  // Eurovision.tv canonical participant page — has the official video,
+  // lyrics, artist bio, and voting info.
+  return `https://eurovision.tv/event/vienna-2026/participants/${countrySlug(country)}`;
+}
+
+function youtubeUrl(country, artist, song) {
+  // Specific query biased toward the official Eurovision channel video.
+  const q = encodeURIComponent(`${artist} ${song} Eurovision 2026 official`);
+  return `https://www.youtube.com/results?search_query=${q}`;
 }
 
 function lineupSnippetHtml(country) {
@@ -202,13 +208,15 @@ function lineupSnippetHtml(country) {
   if (!l.artist) return '';
   return `
     <div class="text-[11px] text-gray-300 mt-0.5 truncate">
-      <span class="text-white">${l.artist}</span>
-      <span class="text-gray-400"> — </span>
-      <span class="italic">${l.song}</span>
+      <a href="${participantUrl(country)}" target="_blank" rel="noopener" class="hover:underline">
+        <span class="text-white">${l.artist}</span>
+        <span class="text-gray-400"> — </span>
+        <span class="italic">${l.song}</span>
+      </a>
     </div>
     <div class="flex gap-2 mt-1 text-[10px]">
-      <a href="${youtubeUrl(country, l.artist, l.song)}" target="_blank" rel="noopener" class="text-red-300 active:text-red-400">▶ YouTube</a>
-      <a href="${wikiUrl(country)}" target="_blank" rel="noopener" class="text-blue-300 active:text-blue-400">Wiki</a>
+      <a href="${youtubeUrl(country, l.artist, l.song)}" target="_blank" rel="noopener" class="text-red-300 active:text-red-400">▶ Watch video</a>
+      <a href="${participantUrl(country)}" target="_blank" rel="noopener" class="text-blue-300 active:text-blue-400">Song page</a>
     </div>
   `;
 }
@@ -593,7 +601,7 @@ function renderPositions() {
         <div class="font-semibold num text-base text-white">$${cash.toFixed(2)}</div>
       </div>
       <div class="bg-gray-900/70 rounded px-2 py-1.5">
-        <div class="text-[10px] text-gray-400 uppercase tracking-wide">Portfolio</div>
+        <div class="text-[10px] text-gray-400 uppercase tracking-wide">Positions</div>
         <div class="font-semibold num text-base text-white">$${portfolio.toFixed(2)}</div>
       </div>
       <div class="bg-gray-900/70 rounded px-2 py-1.5">
