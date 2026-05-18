@@ -326,6 +326,7 @@ function renderPositions() {
   }
   const k = positionsData.kalshi_connected;
   const p = positionsData.polymarket_us_connected;
+  const pm = positionsData.polymarket_us || {};
   grid.innerHTML = `
     <div class="bg-blue-900/30 border border-blue-700 rounded p-2">
       <div class="text-[10px] uppercase text-blue-300">Kalshi</div>
@@ -335,6 +336,8 @@ function renderPositions() {
     <div class="bg-fuchsia-900/30 border border-fuchsia-700 rounded p-2">
       <div class="text-[10px] uppercase text-fuchsia-300">Polymarket US</div>
       <div class="text-sm">${p ? 'connected' : '<span class="text-red-400">not configured</span>'}</div>
+      ${p ? `<div class="num text-[11px] text-gray-300 mt-1">cash ${fmtUsd(pm.cash_dollars)} · pv ${fmtUsd(pm.portfolio_value_dollars)}</div>
+             <div class="num text-[10px] text-gray-500">buying power ${fmtUsd(pm.buying_power_dollars)}</div>` : ''}
     </div>`;
 
   const el = document.getElementById('posList');

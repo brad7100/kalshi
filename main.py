@@ -317,22 +317,62 @@ def _kalshi_position_for_ticker(positions_resp: dict, ticker: str) -> dict:
 
 
 def _poly_position_for_slug(positions_resp: dict, slug: str) -> dict:
-    """Find the Polymarket position dict for one slug. The endpoint
-    documentation describes positions as a map of market slug -> position;
-    we accept either dict or list shape to be robust."""
-    if isinstance(positions_resp, dict):
-        # Map shape: {slug: position_dict}
-        if slug in positions_resp and isinstance(positions_resp[slug], dict):
-            return positions_resp[slug]
-        # Nested under "positions" key
-        nested = positions_resp.get("positions")
-        if isinstance(nested, dict) and slug in nested:
-            return nested[slug]
-        if isinstance(nested, list):
-            for p in nested:
-                if (p.get("marketSlug") or p.get("slug") or "").lower() == slug.lower():
-                    return p
+    """Find the Polymarket position dict for one slug.
+
+    The SDK's GetUserPositionsResponse is `{"positions": {slug: UserPosition}}`
+    — the slug is the dict key, not a field on the position.
+    """
+    if not isinstance(positions_resp, dict):
+        return {}
+    nested = positions_resp.get("positions")
+    if isinstance(nested, dict) and slug in nested:
+        return nested[slug] or {}
+    # Tolerate the rarer shapes too (top-level map or list).
+    if slug in positions_resp and isinstance(positions_resp[slug], dict):
+        return positions_resp[slug]
+    if isinstance(nested, list):
+        for p in nested:
+            md = p.get("marketMetadata") or {}
+            if (md.get("slug") or p.get("slug") or "").lower() == slug.lower():
+                return p
     return {}
+
+
+def _amount_value(amt: Any) -> float:
+    """Pull a float out of a Polymarket Amount object {value: str, currency}."""
+    if isinstance(amt, dict):
+        return _f(amt.get("value"))
+    return _f(amt)
+
+
+def _summarize_poly_balance(resp: dict) -> dict:
+    """Pull headline numbers out of a GetAccountBalancesResponse.
+
+    Shape: `{"balances": [UserBalance, ...]}`. UserBalance has
+    currentBalance, assetNotional, buyingPower, etc — all floats in USD.
+    For Polymarket US there's usually only the USD entry.
+    """
+    balances = (resp or {}).get("balances") or []
+    if not balances:
+        return {
+            "cash_dollars": 0.0,
+            "portfolio_value_dollars": 0.0,
+            "buying_power_dollars": 0.0,
+            "total_dollars": 0.0,
+            "raw": resp or None,
+        }
+    # Prefer the USD entry; fall back to the first if currency isn't tagged.
+    usd = next((b for b in balances if (b.get("currency") or "").upper() == "USD"),
+               balances[0])
+    cash = _f(usd.get("assetAvailable"))
+    portfolio = _f(usd.get("assetNotional"))
+    return {
+        "cash_dollars": cash,
+        "portfolio_value_dollars": portfolio,
+        "buying_power_dollars": _f(usd.get("buyingPower")),
+        "total_dollars": _f(usd.get("currentBalance")),
+        "raw": resp or None,
+    }
 
 
 @app.get("/api/positions")
@@ -369,11 +409,11 @@ def api_positions(_: str = Depends(require_auth)):
         ppos = _poly_position_for_slug(poly_positions, cfg.polymarket_us_slug)
         kshares = _f(kpos.get("position_fp") or kpos.get("position"))
         kside = "yes" if kshares > 0 else ("no" if kshares < 0 else None)
-        # Polymarket positions: net quantity field varies; try several names.
-        pshares = _f(ppos.get("netQuantity") or ppos.get("netQty")
-                     or ppos.get("quantity") or ppos.get("position"))
-        # Polymarket per-position outcome side: same field-name dance.
-        pside = (ppos.get("outcomeSide") or ppos.get("side") or "").lower() or None
+        # Polymarket UserPosition: netPosition is a signed-quantity string;
+        # outcome (yes/no) lives on marketMetadata.
+        pshares = _f(ppos.get("netPosition"))
+        pmd = ppos.get("marketMetadata") or {}
+        pside = (pmd.get("outcome") or "").lower() or None
         rows.append({
             "key": cfg.key,
             "label": cfg.label,
@@ -391,8 +431,9 @@ def api_positions(_: str = Depends(require_auth)):
             "polymarket": {
                 "shares": pshares,
                 "side": pside,
-                "cost_basis": _f(ppos.get("costBasis") or ppos.get("cost_basis")),
-                "realized_pnl": _f(ppos.get("realizedPnl") or ppos.get("realized_pnl")),
+                "cost_basis": _amount_value(ppos.get("cost")),
+                "realized_pnl": _amount_value(ppos.get("realized")),
+                "cash_value": _amount_value(ppos.get("cashValue")),
                 "raw": ppos or None,
             },
         })
@@ -400,10 +441,7 @@ def api_positions(_: str = Depends(require_auth)):
     # Kalshi balance: returned in cents.
     cash_k = (kalshi_balance.get("balance") or 0) / 100.0
     pv_k = (kalshi_balance.get("portfolio_value") or 0) / 100.0
-    # Polymarket balances: dict response, structure TBD; surface the raw.
-    poly_summary = {
-        "raw": poly_balances or None,
-    }
+    poly_summary = _summarize_poly_balance(poly_balances)
     return {
         "kalshi_connected": kalshi.configured,
         "polymarket_us_connected": poly.configured,
