@@ -98,13 +98,17 @@
       tap <b>Add</b> to write a pair into <code>markets.yaml</code> (scanner picks it up on next tick).
     </div>
     <div class="flex flex-wrap gap-2 mt-1">
+      <button id="discoverRuleMatchBtn"
+              class="bg-emerald-700 active:bg-emerald-800 text-xs font-bold px-3 py-2 rounded">
+        Auto-match sports pairs
+      </button>
       <button id="discoverRunBtn"
               class="bg-blue-700 active:bg-blue-800 text-xs font-bold px-3 py-2 rounded">
-        Run discovery
+        LLM discovery
       </button>
       <button id="discoverRunNoLlmBtn"
               class="bg-gray-700 active:bg-gray-600 text-xs px-3 py-2 rounded">
-        Run (prefilter only)
+        Prefilter only
       </button>
       <label class="flex items-center gap-1 ml-auto">
         <input id="filterMatchesOnly" type="checkbox" class="w-4 h-4" checked />
@@ -599,6 +603,34 @@ async function startDiscovery(doLlm) {
   }
 }
 
+async function runRuleMatch() {
+  const btn = document.getElementById('discoverRuleMatchBtn');
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Matching…';
+  try {
+    const r = await api('/api/discovery/rule_match?auto_promote=true', { method: 'POST' });
+    const total = r.matches.length;
+    const promoted = r.auto_promoted ? r.auto_promoted.added : 0;
+    const skipped = r.auto_promoted ? r.auto_promoted.skipped : 0;
+    const seriesBreakdown = Object.entries(r.by_series)
+      .map(([k, v]) => `${k}=${v}`).join(', ');
+    btn.textContent = `+${promoted} new pairs (${skipped} dup)`;
+    btn.classList.add('bg-emerald-800');
+    refreshScan();   // pull fresh scan so the new pairs show up in Opps + All
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = original;
+      btn.classList.remove('bg-emerald-800');
+    }, 4000);
+    console.log('rule_match summary:', seriesBreakdown);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = original;
+    alert(`rule_match failed: ${e.message}`);
+  }
+}
+
 function candidateKey(c) {
   return `${c.poly.market_id}|${c.kalshi.market_id}`;
 }
@@ -758,6 +790,7 @@ document.getElementById('modalConfirmBtn').addEventListener('click', doExecute);
 
 document.getElementById('discoverRunBtn').addEventListener('click', () => startDiscovery(true));
 document.getElementById('discoverRunNoLlmBtn').addEventListener('click', () => startDiscovery(false));
+document.getElementById('discoverRuleMatchBtn').addEventListener('click', runRuleMatch);
 document.getElementById('filterMatchesOnly').addEventListener('change', refreshDiscovery);
 document.getElementById('filterMinConf').addEventListener('change', refreshDiscovery);
 

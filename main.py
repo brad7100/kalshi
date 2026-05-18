@@ -55,6 +55,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import discovery
+import rule_match
 import scanner
 from arb_executor import execute_arb
 from kalshi_client import KalshiClient, KalshiError, KalshiNotConfigured
@@ -648,6 +649,77 @@ def api_discovery_candidates(
         "total": len(cached.get("candidates") or []),
         "shown": min(len(candidates), limit),
         "candidates": candidates[:limit],
+    }
+
+
+def _append_pairs_to_registry(new_pairs: list[dict]) -> dict:
+    """Append a batch of pair dicts to markets.yaml. Idempotent —
+    skips pairs whose (kalshi_ticker, polymarket_us_slug) already
+    appear in the registry. Returns counts."""
+    import yaml as _yaml
+    path = Path(os.getenv("MARKETS_REGISTRY_PATH", "markets.yaml"))
+    try:
+        raw = _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        raw = {}
+    existing = raw.get("pairs") or []
+    seen = {(p.get("kalshi_ticker"), p.get("polymarket_us_slug"))
+            for p in existing}
+    added = 0
+    for entry in new_pairs:
+        key = (entry["kalshi_ticker"], entry["polymarket_us_slug"])
+        if key in seen:
+            continue
+        existing.append(entry)
+        seen.add(key)
+        added += 1
+    raw["pairs"] = existing
+    path.write_text(_yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    return {"added": added, "skipped": len(new_pairs) - added,
+            "total_in_registry": len(existing)}
+
+
+@app.post("/api/discovery/rule_match")
+def api_discovery_rule_match(auto_promote: bool = True,
+                             _: str = Depends(require_auth)):
+    """Run the deterministic team/player matcher across the known sports
+    series. Returns the matched pairs. With auto_promote=true (default),
+    also appends them to markets.yaml so the scanner picks them up on
+    the next tick.
+
+    No LLM, no Anthropic key needed. Fast (<10s typical) — runs inline.
+    """
+    try:
+        matches = rule_match.run_rule_match()
+    except Exception as e:
+        log.exception("rule_match failed")
+        raise HTTPException(500, f"{type(e).__name__}: {e}")
+    new_pairs = [{
+        "key": re.sub(r"[^a-z0-9]+", "-", m.kalshi_ticker.lower()).strip("-")[:48] or "pair",
+        "label": m.label,
+        "kalshi_ticker": m.kalshi_ticker,
+        "polymarket_us_slug": m.polymarket_us_slug,
+        "yes_means": m.yes_means,
+        "enabled": True,
+    } for m in matches]
+    promote_result = None
+    if auto_promote and new_pairs:
+        promote_result = _append_pairs_to_registry(new_pairs)
+    # Group counts by series for the response summary
+    from collections import Counter as _C
+    by_series = _C(m.series_key for m in matches)
+    return {
+        "ok": True,
+        "matches": [{
+            "series_key": m.series_key,
+            "label": m.label,
+            "kalshi_ticker": m.kalshi_ticker,
+            "polymarket_us_slug": m.polymarket_us_slug,
+            "matched_by": m.matched_by,
+            "yes_means": m.yes_means,
+        } for m in matches],
+        "by_series": dict(by_series),
+        "auto_promoted": promote_result,
     }
 
 
