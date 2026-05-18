@@ -403,11 +403,14 @@ def _summarize_poly_balance(resp: dict) -> dict:
     # Prefer the USD entry; fall back to the first if currency isn't tagged.
     usd = next((b for b in balances if (b.get("currency") or "").upper() == "USD"),
                balances[0])
-    cash = _f(usd.get("assetAvailable"))
-    portfolio = _f(usd.get("assetNotional"))
+    # buyingPower = the spendable number Polymarket shows in their UI.
+    # currentBalance = total account value (cash + assets). assetAvailable
+    # is the post-position cash and is 0 for a fresh account because
+    # Polymarket reserves the full balance until trading begins; using
+    # buyingPower for the headline cash matches what users see in the app.
     return {
-        "cash_dollars": cash,
-        "portfolio_value_dollars": portfolio,
+        "cash_dollars": _f(usd.get("buyingPower")),
+        "portfolio_value_dollars": _f(usd.get("assetNotional")),
         "buying_power_dollars": _f(usd.get("buyingPower")),
         "total_dollars": _f(usd.get("currentBalance")),
         "raw": resp or None,
