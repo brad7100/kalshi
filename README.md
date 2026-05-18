@@ -50,13 +50,15 @@ so unmatched orders don't rest on the book.
 ## File layout
 
 ```
-main.py                 FastAPI app — scan / positions / recommend / execute
+main.py                 FastAPI app — scan / positions / recommend / execute / discovery
 scanner.py              Arb math, registry loader, Kalshi public market data
-arb_executor.py         Two-leg concurrent firing + hedge-on-imbalance
+arb_executor.py         Two-leg concurrent firing + hedge + unwind-on-failure
 kalshi_client.py        Authenticated Kalshi client (RSA-PSS)
 polymarket_us_client.py Polymarket US SDK wrapper
+discovery.py            Cross-venue market discovery (catalog + prefilter + Claude verify)
 scan_cli.py             CLI: print arb opportunities to stdout
 markets.yaml            Curated pair registry (edit this to add markets)
+discovered_pairs.json   Cache of discovery results (auto-written)
 static/index.html       Mobile UI
 ```
 
@@ -67,11 +69,24 @@ static/index.html       Mobile UI
   state, fee assumptions
 - `GET /api/scan?contracts=100&min_spread=-5` — current spreads on every
   enabled pair (5s in-memory cache)
-- `GET /api/positions` — per-pair view of Kalshi + Polymarket holdings
+- `GET /api/positions` — per-pair view of Kalshi + Polymarket holdings.
+  Hardened to never 500 — venue failures surface in `errors[]`.
+- `GET /api/debug/poly` — dumps raw `account.balances()` and
+  `portfolio.positions()` responses (or tracebacks). Diagnostic only.
 - `POST /api/arb/recommend` — body `{pair_key, direction, contracts,
   allow_over_cap?}`. Validates cap, returns a 60-second confirmation
   token.
-- `POST /api/arb/execute` — body `{token}`. Fires both legs IOC.
+- `POST /api/arb/execute` — body `{token}`. Fires both legs IOC, hedges
+  imbalance, unwinds if hedge fails. Returns `status` in
+  `{success, partial_success, hedged, unwound, naked, failed, dry_run}`.
+- `POST /api/discovery/run?do_llm=true` — kick off background catalog
+  pull + matching. Returns immediately.
+- `GET /api/discovery/status` — running flag, last run summary, whether
+  `ANTHROPIC_API_KEY` is wired.
+- `GET /api/discovery/candidates?matches_only=true&min_confidence=70` —
+  cached candidate pairs with LLM verdicts.
+- `POST /api/discovery/promote` — body `{poly_slug, kalshi_ticker, label?,
+  yes_means?}`. Appends a pair to `markets.yaml`.
 
 ## Registry: `markets.yaml`
 
@@ -106,6 +121,9 @@ restarting the server.
 | `MARKETS_REGISTRY_PATH` | no | Default `./markets.yaml`. |
 | `POLY_US_TAKER_FEE_BPS` | no | Polymarket US taker fee in basis points. Default 10 (0.10%). Update if their schedule changes. |
 | `MAX_HEDGE_SLIPPAGE_C` | no | Max cents/contract overpay when market-hedging an unfilled leg. Default 2.0. |
+| `ANTHROPIC_API_KEY` | for discovery | Claude API key. Without it, /api/discovery falls back to pre-filter-only (no semantic verification). |
+| `DISCOVERY_TOP_K` | no | Candidates per Polymarket market the LLM verifies. Default 5. |
+| `DISCOVERY_MODEL` | no | Anthropic model ID. Default `claude-haiku-4-5`. |
 | `NTFY_TOPIC` | no | ntfy.sh topic for background push notifications. Treat as a secret — anyone with the topic name can read alerts. |
 | `NTFY_SERVER` | no | Override ntfy server. Default `https://ntfy.sh`. |
 | `NTFY_ARB_SPREAD_C` | no | Alert when locked spread ≥ this many cents/contract. Default 1.0. |
@@ -143,6 +161,23 @@ python scan_cli.py --registry custom.yaml     # different registry file
    the registry and credentials).
 4. Generate domain. Open on phone, Safari → Share → Add to Home Screen.
 
+## Discovery
+
+`/api/discovery/run` pulls every open market from both venues, runs a
+TF-IDF prefilter to narrow each Polymarket market to its top-K Kalshi
+candidates, then sends each candidate pair to Claude with both sides'
+resolution rules and end dates. Claude returns `{match, inverted_yes,
+confidence, reason}` per candidate. Results land in
+`discovered_pairs.json` and surface in the **Discover** tab.
+
+Tap **Add to registry** on a candidate to write a new pair into
+`markets.yaml` — the scanner picks it up on the next tick (file is
+re-read every scan, no restart needed).
+
+The "inverted" flag matters: some venues phrase opposite sides of the
+same event (one's YES = the other's NO). Promotion preserves whatever
+the LLM tagged.
+
 ## Safety
 
 - **Confirmation token flow**: `/api/arb/execute` requires a token issued
@@ -151,10 +186,13 @@ python scan_cli.py --registry custom.yaml     # different registry file
 - **MAX_ORDER_USD** caps the **combined** notional across both legs.
 - **IOC time-in-force** on both legs: an unmatched order does not rest
   on the book.
-- **Hedge-on-imbalance**: if Kalshi fills 100 and Polymarket fills 80, the
-  executor immediately buys 20 more Polymarket shares (or unwinds Kalshi)
-  at up to `MAX_HEDGE_SLIPPAGE_C` worse than quoted, to restore the
-  matched-pair invariant. Never carries a directional position.
+- **Hedge-on-imbalance**: if Kalshi fills 100 and Polymarket fills 80,
+  the executor first tries to buy 20 more Polymarket shares at quoted
+  + slippage cap. If THAT also fails, it sells back 80 Kalshi at the
+  bid — strictly better than leaving naked directional exposure.
+- **Naked-exposure detection**: if hedge AND unwind both fail, the
+  result returns `status: "naked"` with a `naked_exposure` block telling
+  you exactly what to close manually. UI shows a flashing red banner.
 - Every execution attempt is appended to `orders.log.jsonl`.
 
 ## What's NOT included
