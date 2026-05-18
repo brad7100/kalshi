@@ -34,7 +34,6 @@ import yaml
 from polymarket_us_client import (
     PolymarketUSClient,
     PolymarketUSError,
-    best_bid_ask,
 )
 
 KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
@@ -162,13 +161,14 @@ def _poly() -> PolymarketUSClient:
     return _poly_client
 
 
-def parse_poly_quote(market: dict, *, inverted: bool) -> dict:
-    """Normalize a Polymarket US market into a YES-and-NO quote, applying
-    the registry's yes_means flag."""
-    bid, ask = best_bid_ask(market)
+def parse_poly_quote(quote: dict, *, inverted: bool) -> dict:
+    """Normalize a Polymarket US quote dict (from get_quote()) into a
+    YES-and-NO quote, applying the registry's yes_means flag."""
+    bid = quote.get("yes_bid")
+    ask = quote.get("yes_ask")
     if bid is None or ask is None:
         return {
-            "slug": market.get("slug"),
+            "slug": quote.get("slug"),
             "yes_bid": None, "yes_ask": None,
             "no_bid": None, "no_ask": None,
         }
@@ -178,7 +178,7 @@ def parse_poly_quote(market: dict, *, inverted: bool) -> dict:
     else:
         yes_bid, yes_ask = bid, ask
     return {
-        "slug": market.get("slug"),
+        "slug": quote.get("slug"),
         "yes_bid": yes_bid,
         "yes_ask": yes_ask,
         # Binary-market identity:
@@ -289,7 +289,7 @@ def run_scan(contracts: int = 100, min_spread_cents: float = 0.0,
         except Exception as e:
             errors.append(f"kalshi {cfg.key} ({cfg.kalshi_ticker}): {e}")
         try:
-            poly_raw = poly.get_market(cfg.polymarket_us_slug)
+            poly_raw = poly.get_quote(cfg.polymarket_us_slug)
             poly_q = parse_poly_quote(poly_raw, inverted=(cfg.yes_means == "inverted"))
         except PolymarketUSError as e:
             errors.append(f"polymarket {cfg.key} ({cfg.polymarket_us_slug}): {e}")

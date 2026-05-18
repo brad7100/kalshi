@@ -9,34 +9,44 @@
 #   key                 short stable identifier (used in URLs, logs, alerts)
 #   label               human-readable name shown in UI / notifications
 #   kalshi_ticker       exact Kalshi market ticker (NOT event_ticker — the
-#                       specific market, e.g. KXPRESPARTY-28-DEM)
-#   polymarket_us_slug  exact Polymarket US market slug (the URL slug; find
-#                       it via the slug shown on the market's polymarket.us
-#                       page, or query /markets via the SDK)
+#                       specific market, e.g. CONTROLH-2026-D)
+#   polymarket_us_slug  exact Polymarket US market slug
 #   yes_means           "same" (default) or "inverted". Use "inverted"
-#                       when one venue's YES corresponds to the other's NO
-#                       (e.g. Kalshi "Will rate cut happen?" vs Polymarket
-#                       "Will rate hold?"). When inverted, the scanner
-#                       swaps the Polymarket YES/NO sides before pairing.
+#                       when one venue's YES corresponds to the other's NO.
 #   enabled             skip a pair without deleting its entry. Default true.
 #
-# Add pairs by appending entries below. The file is reloaded on every
-# scan, so changes take effect without restarting the app.
+# The file is reloaded on every scan, so changes take effect without
+# restarting the app.
 
-pairs: []
+pairs:
+  # 2026 U.S. House midterm — partisan control. Both venues quote two
+  # separate single-outcome markets (one for Dem winning, one for Rep
+  # winning). Pair each to its same-side counterpart.
+  - key: house-2026-dem
+    label: 2026 House — Dem wins
+    kalshi_ticker: CONTROLH-2026-D
+    polymarket_us_slug: paccc-usho-midterms-2026-11-03-dem
+    yes_means: same
+    enabled: true
 
-# Examples — uncomment and edit with real tickers/slugs you've verified:
-#
-# - key: pres-2028-dem-nom
-#   label: 2028 Dem Nominee — Newsom
-#   kalshi_ticker: KXPRESPARTY-28-DEM
-#   polymarket_us_slug: will-gavin-newsom-be-the-2028-dem-nominee
-#   yes_means: same
-#   enabled: true
-#
-# - key: fed-rate-cut-2026q3
-#   label: Fed cut by Sep 2026 FOMC
-#   kalshi_ticker: KXFEDDECISION-26SEP-C25
-#   polymarket_us_slug: will-the-fed-cut-rates-at-september-2026-meeting
-#   yes_means: same
-#   enabled: true
+  - key: house-2026-rep
+    label: 2026 House — Rep wins
+    kalshi_ticker: CONTROLH-2026-R
+    polymarket_us_slug: paccc-usho-midterms-2026-11-03-rep
+    yes_means: same
+    enabled: true
+
+  # 2026 U.S. Senate midterm — same structure as House.
+  - key: senate-2026-dem
+    label: 2026 Senate — Dem wins
+    kalshi_ticker: CONTROLS-2026-D
+    polymarket_us_slug: paccc-usse-midterms-2026-11-03-dem
+    yes_means: same
+    enabled: true
+
+  - key: senate-2026-rep
+    label: 2026 Senate — Rep wins
+    kalshi_ticker: CONTROLS-2026-R
+    polymarket_us_slug: paccc-usse-midterms-2026-11-03-rep
+    yes_means: same
+    enabled: true
