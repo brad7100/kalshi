@@ -139,13 +139,6 @@ class PolymarketUSClient:
             raise PolymarketUSError("polymarket-us SDK not installed")
         return self._client.markets.book(slug)
 
-
-def _f_local(v, default):
-    try:
-        return float(v) if v is not None else default
-    except (TypeError, ValueError):
-        return default
-
     # ---- authenticated portfolio --------------------------------------------
 
     @_wrap
@@ -204,6 +197,13 @@ def _f_local(v, default):
     def cancel_order(self, order_id: str) -> dict:
         self._require_auth()
         return self._client.orders.cancel(order_id, {})
+
+
+def _f_local(v, default):
+    try:
+        return float(v) if v is not None else default
+    except (TypeError, ValueError):
+        return default
 
 
 _ORDER_TYPE_MAP = {
