@@ -1,87 +1,170 @@
-# Eurovision EV — Kalshi vs Polymarket Scanner
+# Arb Scanner — Kalshi ↔ Polymarket US
 
-Mobile-first web app that finds +EV opportunities on Kalshi's Eurovision
-markets by comparing against Polymarket prices, lets you view your live
-Kalshi positions, and (when enabled) executes orders.
+Mobile-first web app + CLI that scans curated pairs of Kalshi and
+Polymarket US markets for **true cross-platform arbitrage** — pairs where
+buying YES on one venue and NO on the other locks in profit after fees —
+and (when enabled) auto-executes both legs.
+
+## Arb math
+
+For each registered pair, the scanner evaluates both directions:
+
+```
+Direction A:  BUY YES @ Kalshi  +  BUY NO @ Polymarket US
+              cost   = kalshi_yes_ask + poly_no_ask
+                       + kalshi_taker_fee + poly_taker_fee
+              locked = $1 − cost     (per matched contract pair)
+
+Direction B:  BUY YES @ Polymarket US  +  BUY NO @ Kalshi
+              (mirror)
+```
+
+Rows with `locked > 0` are real arbs — every matched pair pays out $1 at
+settlement regardless of outcome. On Polymarket, NO prices are derived
+as the complement of YES (`no_ask = 1 − yes_bid`).
+
+**Fees**
+- Kalshi taker: `ceil(0.07 × N × P × (1 − P) × 100) / 100`, divided by N.
+- Polymarket US taker: `POLY_US_TAKER_FEE_BPS / 10_000 × P` per contract
+  (default 10 bps = 0.10%). Override via env if their schedule changes.
+- The executor uses IOC (Immediate-Or-Cancel) on both legs, so we always
+  pay taker fees. Maker rebates, if any, are not relied on.
 
 ## Status
 
-Phase 1: **DRY-RUN**. The order endpoint is wired end-to-end but the
-actual Kalshi `POST /portfolio/orders` call is short-circuited and the
-UI shows "Testing" instead. Flip `DRY_RUN=false` in Railway env vars when
-ready to go live.
+**DRY-RUN by default.** Order endpoints are wired end-to-end but neither
+Kalshi nor Polymarket US actually receives orders until `DRY_RUN=false`.
+Even live, the executor sizes against `MAX_ORDER_USD` and uses IOC TIF
+so unmatched orders don't rest on the book.
 
 ## Stack
 
 - Python 3.12 + FastAPI + uvicorn
-- Pure stdlib HTTP for upstream calls (urllib)
-- `cryptography` for Kalshi RSA-PSS request signing
-- Vanilla HTML/JS frontend, Tailwind via CDN (no build step)
+- `kalshi_client.py` — authenticated RSA-PSS-signed REST (stdlib HTTP)
+- `polymarket_us_client.py` — thin wrapper around the official
+  [`polymarket-us`](https://pypi.org/project/polymarket-us/) SDK
+  (Ed25519-signed REST against `https://api.polymarket.us`)
+- `pyyaml` for the curated market registry
+- Vanilla HTML/JS + Tailwind CDN, no build step
+
+## File layout
+
+```
+main.py                 FastAPI app — scan / positions / recommend / execute
+scanner.py              Arb math, registry loader, Kalshi public market data
+arb_executor.py         Two-leg concurrent firing + hedge-on-imbalance
+kalshi_client.py        Authenticated Kalshi client (RSA-PSS)
+polymarket_us_client.py Polymarket US SDK wrapper
+scan_cli.py             CLI: print arb opportunities to stdout
+markets.yaml            Curated pair registry (edit this to add markets)
+static/index.html       Mobile UI
+```
 
 ## Endpoints
 
 - `GET /` — mobile UI (HTTP Basic auth if `APP_PASSWORD` set)
-- `GET /health` — diagnostic; reports `dry_run`, `kalshi_configured`, `auth_enabled`
-- `GET /api/scan?contracts=100&price_side=mid` — live EV scan
-- `GET /api/positions` — your Kalshi balance + Eurovision positions
-- `POST /api/recommend` — validate a proposed order, return a confirmation token
-- `POST /api/order` — execute the token (DRY-RUN by default)
+- `GET /health` — diagnostic; reports `dry_run`, both venues' configured
+  state, fee assumptions
+- `GET /api/scan?contracts=100&min_spread=-5` — current spreads on every
+  enabled pair (5s in-memory cache)
+- `GET /api/positions` — per-pair view of Kalshi + Polymarket holdings
+- `POST /api/arb/recommend` — body `{pair_key, direction, contracts,
+  allow_over_cap?}`. Validates cap, returns a 60-second confirmation
+  token.
+- `POST /api/arb/execute` — body `{token}`. Fires both legs IOC.
+
+## Registry: `markets.yaml`
+
+Each pair is one stable identifier (`key`), a human label, the exact
+Kalshi market ticker, and the exact Polymarket US market slug. Use
+`yes_means: inverted` when one venue's YES corresponds to the other's NO.
+
+```yaml
+pairs:
+  - key: pres-2028-dem-nom
+    label: 2028 Dem Nominee — Newsom
+    kalshi_ticker: KXPRESPARTY-28-DEM
+    polymarket_us_slug: will-gavin-newsom-be-the-2028-dem-nominee
+    yes_means: same
+    enabled: true
+```
+
+The file is re-read on every scan, so adding pairs takes effect without
+restarting the server.
 
 ## Environment variables
 
 | Var | Required | Notes |
 |---|---|---|
 | `APP_PASSWORD` | yes for deploy | HTTP Basic password gate. Any username works. |
-| `KALSHI_KEY_ID` | for /api/positions and live orders | UUID-style Key ID from Kalshi → API Keys |
-| `KALSHI_PRIVATE_KEY` | for /api/positions and live orders | Full PEM contents. Newlines can be literal `\n` (Railway pastes work). |
-| `DRY_RUN` | no | `true` (default) = stub orders; `false` = real |
-| `MAX_ORDER_USD` | no | Per-order notional cap. Default 50. |
+| `KALSHI_KEY_ID` | for trading + positions | UUID-style Key ID from Kalshi → API Keys |
+| `KALSHI_PRIVATE_KEY` | for trading + positions | Full PEM contents. Newlines can be literal `\n`. |
+| `POLYMARKET_US_KEY_ID` | for trading + positions | UUID from polymarket.us/developer (requires completed KYC via the Polymarket US iOS app first) |
+| `POLYMARKET_US_SECRET_KEY` | for trading + positions | Base64-encoded 32-byte Ed25519 private key |
+| `DRY_RUN` | no | `true` (default) stubs orders; `false` = real two-leg execution |
+| `MAX_ORDER_USD` | no | Per-execution combined-notional cap (both legs summed). Default 50. |
+| `MARKETS_REGISTRY_PATH` | no | Default `./markets.yaml`. |
+| `POLY_US_TAKER_FEE_BPS` | no | Polymarket US taker fee in basis points. Default 10 (0.10%). Update if their schedule changes. |
+| `MAX_HEDGE_SLIPPAGE_C` | no | Max cents/contract overpay when market-hedging an unfilled leg. Default 2.0. |
 | `NTFY_TOPIC` | no | ntfy.sh topic for background push notifications. Treat as a secret — anyone with the topic name can read alerts. |
 | `NTFY_SERVER` | no | Override ntfy server. Default `https://ntfy.sh`. |
-| `NTFY_BUY_EV_PCT` | no | Push BUY alert when EV/$ ≥ this %. Default 1.5. |
-| `NTFY_SELL_EDGE_C` | no | Push SELL alert when (bid − fair − fee) ≥ this cents. Default 1.0. |
-| `NTFY_COOLDOWN_SEC` | no | Min seconds between alerts for the same ticker side. Default 300. |
+| `NTFY_ARB_SPREAD_C` | no | Alert when locked spread ≥ this many cents/contract. Default 1.0. |
+| `NTFY_COOLDOWN_SEC` | no | Min seconds between alerts for the same opportunity. Default 300. |
 | `NTFY_INTERVAL_SEC` | no | Background scan interval. Default 30. |
-| `TELEVOTE_MODE_START_UTC` | no | ISO-8601 UTC timestamp, e.g. `2026-05-16T19:00:00Z`. While the current time is inside the window, the ntfy loop switches to hair-trigger thresholds. |
-| `TELEVOTE_MODE_END_UTC` | no | End of the televote window. |
-| `TELEVOTE_BUY_EV_PCT` | no | Buy threshold during televote mode. Default 0.5%. |
-| `TELEVOTE_SELL_EDGE_C` | no | Sell threshold during televote mode. Default 0.5¢. |
-| `TELEVOTE_INTERVAL_SEC` | no | Scan interval during televote mode. Default 15s. |
 
 ## Local dev
 
 ```bash
 pip install -r requirements.txt
-# Optional: set creds (or skip — positions will show "not connected")
 export KALSHI_KEY_ID=...
 export KALSHI_PRIVATE_KEY="$(cat path/to/kalshi_private_key.pem)"
+export POLYMARKET_US_KEY_ID=...
+export POLYMARKET_US_SECRET_KEY=...
 uvicorn main:app --reload --port 8000
 ```
 
 Open http://localhost:8000 — no `APP_PASSWORD` set means no auth in dev.
 
-## Railway deploy
-
-1. Push this folder to GitHub.
-2. New Railway project → "Deploy from GitHub repo" → pick the repo.
-3. Variables tab → set `APP_PASSWORD`, `KALSHI_KEY_ID`, `KALSHI_PRIVATE_KEY`.
-   Leave `DRY_RUN=true` for now.
-4. Settings → Generate Domain. Open on your phone.
-5. iPhone: Safari → Share → Add to Home Screen.
-
-## CLI (for testing without the web app)
+## CLI
 
 ```bash
-python eurovision_ev.py                     # one-shot scan
-python eurovision_ev.py --loop 20           # refresh every 20s
-python eurovision_ev.py --contracts 50      # size the fee calc
+python scan_cli.py                            # one-shot, registered pairs
+python scan_cli.py --loop 20                  # refresh every 20s
+python scan_cli.py --min-spread -1            # include near-miss rows (≥ −1¢)
+python scan_cli.py --contracts 50             # size used for fee calc
+python scan_cli.py --registry custom.yaml     # different registry file
 ```
 
-## Safety notes
+## Railway / production deploy
 
-- Orders require a confirmation token from `/api/recommend` that expires
-  in 60s — you can't accidentally fire by hitting a URL.
-- Every order attempt (dry-run or live) is appended to `orders.log.jsonl`.
-- `MAX_ORDER_USD` caps per-order notional. Keep it small while testing.
-- The private key never leaves your Railway env. Don't paste it into chat
-  or commit it.
+1. Push to GitHub.
+2. Railway → "Deploy from GitHub repo".
+3. Set env vars listed above (leave `DRY_RUN=true` until you've verified
+   the registry and credentials).
+4. Generate domain. Open on phone, Safari → Share → Add to Home Screen.
+
+## Safety
+
+- **Confirmation token flow**: `/api/arb/execute` requires a token issued
+  by `/api/arb/recommend` within the last 60 seconds. You can't fire by
+  accident from a URL.
+- **MAX_ORDER_USD** caps the **combined** notional across both legs.
+- **IOC time-in-force** on both legs: an unmatched order does not rest
+  on the book.
+- **Hedge-on-imbalance**: if Kalshi fills 100 and Polymarket fills 80, the
+  executor immediately buys 20 more Polymarket shares (or unwinds Kalshi)
+  at up to `MAX_HEDGE_SLIPPAGE_C` worse than quoted, to restore the
+  matched-pair invariant. Never carries a directional position.
+- Every execution attempt is appended to `orders.log.jsonl`.
+
+## What's NOT included
+
+- **Polymarket US has no public sandbox.** Live testing starts with real
+  money at minimum sizes ($1–5) once you've verified credentials work.
+- **No automatic pair discovery.** You curate `markets.yaml` manually
+  using market titles, expirations, and resolution criteria you've
+  verified match on both venues.
+- **No order book depth modeling.** The scanner uses top-of-book best
+  bid/ask. If an arb looks tasty at small size but the book is thin past
+  the first level, you'll get a partial fill and the hedge logic kicks
+  in. Size accordingly.

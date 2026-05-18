@@ -1,83 +1,43 @@
 """
-Shared scanner logic: pull Kalshi + Polymarket Eurovision prices for the
-Winner, Jury, and Televote events, then compute EV. Used by both the CLI
-(eurovision_ev.py) and the FastAPI backend (main.py).
+Cross-venue arbitrage scanner.
+
+For each curated pair in markets.yaml, fetch top-of-book prices from
+Kalshi and Polymarket US, then compute both arbitrage directions:
+
+    Direction A: BUY YES on Kalshi + BUY NO on Polymarket US
+                 cost = kalshi_yes_ask + poly_no_ask + fees
+                 locked spread = $1 - cost   (per contract pair)
+
+    Direction B: BUY YES on Polymarket US + BUY NO on Kalshi
+                 cost = poly_yes_ask + kalshi_no_ask + fees
+                 locked spread = $1 - cost
+
+Only rows with locked_spread > 0 surface as opportunities.
+
+On Polymarket, NO side prices are derived as the complement of YES
+(no_ask = 1 - yes_bid, no_bid = 1 - yes_ask) — the standard binary-
+market identity.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from polymarket_client import (
-    PolymarketError,
-    fetch_event,
-    parse_country_markets,
+import yaml
+
+from polymarket_us_client import (
+    PolymarketUSClient,
+    PolymarketUSError,
+    best_bid_ask,
 )
 
-KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2/markets"
-
-# Each event we support. Adding more (Top N, Last Place, semifinals) is just
-# a matter of finding the Kalshi event_ticker + Polymarket slug pair.
-EVENTS: list[dict[str, str]] = [
-    {
-        "key": "winner",
-        "label": "Winner",
-        "kalshi_event": "KXEUROVISION-26",
-        "polymarket_slug": "eurovision-winner-2026",
-    },
-    {
-        "key": "jury",
-        "label": "Jury",
-        "kalshi_event": "KXEUROVISIONJURY-26",
-        "polymarket_slug": "eurovision-2026-jury-winner",
-    },
-    {
-        "key": "televote",
-        "label": "Televote",
-        "kalshi_event": "KXEUROVISIONTELEV-26",
-        "polymarket_slug": "eurovision-2026-televote-winner",
-    },
-]
-
-# Kalshi ticker suffix -> internal country name. The televote event uses
-# CYP for Cyprus while the winner event uses CYR — both map to the same
-# country.
-TICKER_TO_COUNTRY = {
-    "ALB": "Albania", "ARM": "Armenia", "AUS": "Australia", "AUST": "Austria",
-    "AZE": "Azerbaijan", "BEL": "Belgium", "BUL": "Bulgaria", "CRO": "Croatia",
-    "CYR": "Cyprus", "CYP": "Cyprus",
-    "CZE": "Czechia", "DEN": "Denmark", "EST": "Estonia",
-    "FIN": "Finland", "FRA": "France", "GEO": "Georgia", "GER": "Germany",
-    "GRE": "Greece", "ISR": "Israel", "ITA": "Italy", "LAT": "Latvia",
-    "LIT": "Lithuania", "LUX": "Luxembourg", "MAL": "Malta", "MOL": "Moldova",
-    "MON": "Montenegro", "NOR": "Norway", "POL": "Poland", "POR": "Portugal",
-    "ROM": "Romania", "SAN": "San Marino", "SER": "Serbia", "SWE": "Sweden",
-    "SWI": "Switzerland", "UKR": "Ukraine", "UNI": "United Kingdom",
-}
-
-POLYMARKET_ALIASES = {
-    "Czech Republic": "Czechia",
-    "UK": "United Kingdom",
-    "Great Britain": "United Kingdom",
-}
-
-
-def _f(v, default: float = 0.0) -> float:
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return default
-
-
-def normalize_country(name: str) -> str:
-    name = name.strip()
-    return POLYMARKET_ALIASES.get(name, name)
-
-
-# ---- Kalshi public market data --------------------------------------------
+KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -85,46 +45,56 @@ _BROWSER_UA = (
     "Chrome/126.0.0.0 Safari/537.36"
 )
 
-
-def fetch_kalshi_event(event_ticker: str) -> dict:
-    url = f"{KALSHI_BASE}?event_ticker={event_ticker}&limit=200&status=open"
-    req = urllib.request.Request(
-        url, headers={"Accept": "application/json", "User-Agent": _BROWSER_UA}
-    )
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read())
+# Polymarket US taker fee in basis points. Default 10 bps = 0.10%, per
+# documented "Taker Orders incur fees, Maker Orders receive a rebate"
+# guidance. Exact schedule is in their rulebook; override here if it
+# changes. Maker rebate is ignored in arb math — we always use IOC, so
+# we always take.
+POLY_US_TAKER_FEE_BPS = float(os.getenv("POLY_US_TAKER_FEE_BPS", "10"))
 
 
-def parse_kalshi(payload: dict) -> dict[str, dict]:
-    out: dict[str, dict] = {}
-    for m in payload.get("markets", []):
-        ticker = m.get("ticker", "")
-        suffix = ticker.rsplit("-", 1)[-1]
-        country = TICKER_TO_COUNTRY.get(suffix)
-        if not country:
+# ---- registry --------------------------------------------------------------
+
+@dataclass
+class PairConfig:
+    key: str
+    label: str
+    kalshi_ticker: str
+    polymarket_us_slug: str
+    yes_means: str = "same"  # "same" or "inverted"
+    enabled: bool = True
+
+
+def load_registry(path: str | None = None) -> list[PairConfig]:
+    p = Path(path or os.getenv("MARKETS_REGISTRY_PATH", "markets.yaml"))
+    if not p.exists():
+        return []
+    raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    pairs = raw.get("pairs") or []
+    out: list[PairConfig] = []
+    for entry in pairs:
+        if not isinstance(entry, dict):
             continue
-        out[country] = {
-            "ticker": ticker,
-            "yes_ask": _f(m.get("yes_ask_dollars")),
-            "yes_bid": _f(m.get("yes_bid_dollars")),
-            "no_ask":  _f(m.get("no_ask_dollars")),
-            "no_bid":  _f(m.get("no_bid_dollars")),
-            "last_price": _f(m.get("last_price_dollars")),
-            "volume": _f(m.get("volume_fp")),
-        }
+        try:
+            cfg = PairConfig(
+                key=str(entry["key"]),
+                label=str(entry.get("label", entry["key"])),
+                kalshi_ticker=str(entry["kalshi_ticker"]),
+                polymarket_us_slug=str(entry["polymarket_us_slug"]),
+                yes_means=str(entry.get("yes_means", "same")).lower(),
+                enabled=bool(entry.get("enabled", True)),
+            )
+        except KeyError as e:
+            raise ValueError(f"markets.yaml pair missing field {e}") from e
+        if cfg.yes_means not in ("same", "inverted"):
+            raise ValueError(
+                f"markets.yaml pair {cfg.key}: yes_means must be 'same' or 'inverted'"
+            )
+        out.append(cfg)
     return out
 
 
-# ---- Polymarket -----------------------------------------------------------
-
-def fetch_polymarket(slug: str) -> tuple[dict[str, dict], dict[str, Any]]:
-    event = fetch_event(slug)
-    raw = parse_country_markets(event)
-    poly = {normalize_country(k): v for k, v in raw.items()}
-    return poly, event
-
-
-# ---- EV math --------------------------------------------------------------
+# ---- fees ------------------------------------------------------------------
 
 def kalshi_taker_fee_per_contract(yes_price: float, contracts: int) -> float:
     """Kalshi taker fee per contract.
@@ -136,111 +106,218 @@ def kalshi_taker_fee_per_contract(yes_price: float, contracts: int) -> float:
     return (rounded_total_cents / 100.0) / contracts
 
 
-def pick_true_prob(poly_row: dict, side: str) -> float | None:
-    if side == "bid":
-        return poly_row.get("yes_bid")
-    if side == "ask":
-        return poly_row.get("yes_ask")
-    if side == "last":
-        return poly_row.get("yes_last")
-    return poly_row.get("yes_mid") or poly_row.get("yes_ask")
+def polymarket_us_taker_fee_per_contract(price: float, contracts: int = 1) -> float:
+    """Polymarket US taker fee per contract.
 
-
-def compute_rows(kalshi: dict, poly: dict, contracts: int,
-                 price_side: str = "mid") -> list[dict]:
-    """Produce one row per (country, side). 'side' is "yes" or "no".
-
-    On a Kalshi binary market, there are two distinct buy opportunities:
-        BUY YES at yes_ask  — pays $1 if the event happens
-        BUY NO  at no_ask   — pays $1 if it doesn't
-    These have independent prices and frequently asymmetric EV. The +EV
-    edge often shows up on the NO side of heavy favorites (e.g. fading
-    Finland) rather than the YES side. We emit a row for each tradable
-    side so the UI can show both opportunities.
+    Fee is charged in basis points of notional (price × quantity), so
+    per-contract fee = price × bps / 10_000. Quantity is informational —
+    fee scales linearly so per-contract is constant for a given price.
     """
-    rows: list[dict] = []
-    for country, p in poly.items():
-        k = kalshi.get(country)
-        if not k:
-            continue
-        true_prob_yes = pick_true_prob(p, price_side)
-        if true_prob_yes is None or true_prob_yes <= 0:
-            continue
-        common = {
-            "country": country,
-            "ticker": k["ticker"],
-            "kalshi_volume": k["volume"],
-            "poly_bid": p.get("yes_bid"),
-            "poly_ask": p.get("yes_ask"),
-            "poly_mid": p.get("yes_mid"),
-            "poly_last": p.get("yes_last"),
-            "poly_volume": p.get("volume", 0),
-            "poly_true_prob_yes": true_prob_yes,
+    return float(price) * POLY_US_TAKER_FEE_BPS / 10_000.0
+
+
+# ---- Kalshi public market data --------------------------------------------
+
+def fetch_kalshi_market(ticker: str) -> dict:
+    """Return the raw market dict for one Kalshi ticker."""
+    url = f"{KALSHI_BASE}/markets/{ticker}"
+    req = urllib.request.Request(
+        url, headers={"Accept": "application/json", "User-Agent": _BROWSER_UA}
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        payload = json.loads(r.read())
+    return payload.get("market") or {}
+
+
+def _f(v, default: float | None = None) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_kalshi_quote(market: dict) -> dict:
+    """Normalize a Kalshi market dict into a side-aware quote."""
+    return {
+        "ticker": market.get("ticker"),
+        "yes_bid": _f(market.get("yes_bid_dollars")),
+        "yes_ask": _f(market.get("yes_ask_dollars")),
+        "no_bid":  _f(market.get("no_bid_dollars")),
+        "no_ask":  _f(market.get("no_ask_dollars")),
+        "last_price": _f(market.get("last_price_dollars")),
+        "volume": _f(market.get("volume_fp"), 0.0) or 0.0,
+        "status": market.get("status"),
+    }
+
+
+# ---- Polymarket US wrapper -------------------------------------------------
+
+_poly_client: PolymarketUSClient | None = None
+
+
+def _poly() -> PolymarketUSClient:
+    global _poly_client
+    if _poly_client is None:
+        _poly_client = PolymarketUSClient()
+    return _poly_client
+
+
+def parse_poly_quote(market: dict, *, inverted: bool) -> dict:
+    """Normalize a Polymarket US market into a YES-and-NO quote, applying
+    the registry's yes_means flag."""
+    bid, ask = best_bid_ask(market)
+    if bid is None or ask is None:
+        return {
+            "slug": market.get("slug"),
+            "yes_bid": None, "yes_ask": None,
+            "no_bid": None, "no_ask": None,
         }
-        for side, ask, bid, true_prob in (
-            ("yes", k.get("yes_ask"), k.get("yes_bid"), true_prob_yes),
-            ("no",  k.get("no_ask"),  k.get("no_bid"),  1.0 - true_prob_yes),
-        ):
-            if ask is None or ask <= 0 or ask >= 1:
-                continue
-            fee = kalshi_taker_fee_per_contract(ask, contracts)
-            ev_per_contract = (
-                true_prob * (1.0 - ask)
-                - (1.0 - true_prob) * ask
-                - fee
-            )
-            rows.append({**common,
-                "side": side,
-                "kalshi_bid": bid,
-                "kalshi_ask": ask,
-                "true_prob": true_prob,
-                "edge_pp": (true_prob - ask) * 100,
-                "ev_per_contract": ev_per_contract,
-                "ev_per_dollar": ev_per_contract / ask if ask else 0.0,
-                "fee_per_contract": fee,
+    if inverted:
+        # The Polymarket market's YES is actually our pair's NO. Flip.
+        yes_bid, yes_ask = 1.0 - ask, 1.0 - bid
+    else:
+        yes_bid, yes_ask = bid, ask
+    return {
+        "slug": market.get("slug"),
+        "yes_bid": yes_bid,
+        "yes_ask": yes_ask,
+        # Binary-market identity:
+        "no_bid": 1.0 - yes_ask,
+        "no_ask": 1.0 - yes_bid,
+    }
+
+
+# ---- arb math --------------------------------------------------------------
+
+@dataclass
+class Leg:
+    venue: str       # "kalshi" or "polymarket_us"
+    market_id: str   # ticker or slug
+    side: str        # "yes" or "no"
+    price: float     # ask we'd pay (probability 0-1)
+    fee: float       # per-contract dollar fee
+    bid: float | None = None  # for context only
+
+    def as_dict(self) -> dict:
+        return {
+            "venue": self.venue,
+            "market_id": self.market_id,
+            "side": self.side,
+            "price": self.price,
+            "price_cents": round(self.price * 100, 2),
+            "fee": self.fee,
+            "fee_cents": round(self.fee * 100, 2),
+            "bid": self.bid,
+        }
+
+
+def _build_legs(kq: dict, pq: dict, contracts: int) -> list[dict]:
+    """Build candidate arb rows for one pair from its Kalshi + Poly quotes."""
+    rows: list[dict] = []
+
+    # Direction A: BUY YES on Kalshi + BUY NO on Polymarket
+    if kq.get("yes_ask") is not None and pq.get("no_ask") is not None:
+        ka = kq["yes_ask"]; pa = pq["no_ask"]
+        if 0 < ka < 1 and 0 < pa < 1:
+            kfee = kalshi_taker_fee_per_contract(ka, contracts)
+            pfee = polymarket_us_taker_fee_per_contract(pa, contracts)
+            cost = ka + pa + kfee + pfee
+            rows.append({
+                "direction": "A",
+                "direction_label": "Kalshi YES + Polymarket NO",
+                "kalshi_leg": Leg("kalshi", kq["ticker"], "yes",
+                                  ka, kfee, bid=kq.get("yes_bid")).as_dict(),
+                "poly_leg": Leg("polymarket_us", pq["slug"], "no",
+                                pa, pfee, bid=pq.get("no_bid")).as_dict(),
+                "cost_per_contract": cost,
+                "locked_spread": 1.0 - cost,
+                "locked_spread_cents": round((1.0 - cost) * 100, 2),
+                "fees_total_cents": round((kfee + pfee) * 100, 2),
             })
+
+    # Direction B: BUY YES on Polymarket + BUY NO on Kalshi
+    if pq.get("yes_ask") is not None and kq.get("no_ask") is not None:
+        pa = pq["yes_ask"]; ka = kq["no_ask"]
+        if 0 < pa < 1 and 0 < ka < 1:
+            # Kalshi fees treat YES/NO symmetrically (P*(1-P) is the same
+            # function), so feeding the NO ask in is correct.
+            kfee = kalshi_taker_fee_per_contract(ka, contracts)
+            pfee = polymarket_us_taker_fee_per_contract(pa, contracts)
+            cost = pa + ka + kfee + pfee
+            rows.append({
+                "direction": "B",
+                "direction_label": "Polymarket YES + Kalshi NO",
+                "kalshi_leg": Leg("kalshi", kq["ticker"], "no",
+                                  ka, kfee, bid=kq.get("no_bid")).as_dict(),
+                "poly_leg": Leg("polymarket_us", pq["slug"], "yes",
+                                pa, pfee, bid=pq.get("yes_bid")).as_dict(),
+                "cost_per_contract": cost,
+                "locked_spread": 1.0 - cost,
+                "locked_spread_cents": round((1.0 - cost) * 100, 2),
+                "fees_total_cents": round((kfee + pfee) * 100, 2),
+            })
+
     return rows
 
 
-def run_scan(contracts: int = 100, price_side: str = "mid") -> dict:
-    """Scan every configured event and return a unified row set. Each row
-    carries event_key/event_label so the UI can group or label by event.
-    Errors per event are isolated — a failure on one doesn't kill the rest.
+# ---- entry point -----------------------------------------------------------
+
+def run_scan(contracts: int = 100, min_spread_cents: float = 0.0,
+             registry_path: str | None = None) -> dict:
+    """Scan every enabled pair, return both arb directions.
+
+    contracts:        size used to compute fee per contract (Kalshi fee
+                      depends on contract count due to round-up-to-cent).
+    min_spread_cents: only return rows with locked_spread >= this many cents
+                      per contract. Default 0 = show every positive arb.
+                      Pass negative to surface near-misses for debugging.
     """
+    pairs = load_registry(registry_path)
+    poly = _poly()
+
     all_rows: list[dict] = []
-    events_info: list[dict] = []
+    pairs_info: list[dict] = []
     errors: list[str] = []
-    for ev in EVENTS:
+
+    for cfg in pairs:
+        if not cfg.enabled:
+            continue
+        kalshi_q: dict = {}
+        poly_q: dict = {}
         try:
-            kalshi = parse_kalshi(fetch_kalshi_event(ev["kalshi_event"]))
+            kalshi_q = parse_kalshi_quote(fetch_kalshi_market(cfg.kalshi_ticker))
         except Exception as e:
-            errors.append(f"kalshi {ev['key']}: {e}")
-            kalshi = {}
+            errors.append(f"kalshi {cfg.key} ({cfg.kalshi_ticker}): {e}")
         try:
-            poly, poly_event = fetch_polymarket(ev["polymarket_slug"])
-        except PolymarketError as e:
-            errors.append(f"polymarket {ev['key']}: {e}")
-            poly, poly_event = {}, {}
-        rows = compute_rows(kalshi, poly, contracts, price_side)
+            poly_raw = poly.get_market(cfg.polymarket_us_slug)
+            poly_q = parse_poly_quote(poly_raw, inverted=(cfg.yes_means == "inverted"))
+        except PolymarketUSError as e:
+            errors.append(f"polymarket {cfg.key} ({cfg.polymarket_us_slug}): {e}")
+        rows = _build_legs(kalshi_q, poly_q, contracts) if (kalshi_q and poly_q) else []
         for r in rows:
-            r["event_key"] = ev["key"]
-            r["event_label"] = ev["label"]
-        all_rows.extend(rows)
-        events_info.append({
-            "key": ev["key"],
-            "label": ev["label"],
-            "kalshi_event_ticker": ev["kalshi_event"],
-            "polymarket_slug": ev["polymarket_slug"],
-            "kalshi_count": len(kalshi),
-            "poly_count": len(poly),
-            "row_count": len(rows),
-            "poly_event_title": poly_event.get("title", "") if poly_event else "",
+            r["pair_key"] = cfg.key
+            r["label"] = cfg.label
+        kept = [r for r in rows if r["locked_spread_cents"] >= min_spread_cents]
+        all_rows.extend(kept)
+        pairs_info.append({
+            "key": cfg.key,
+            "label": cfg.label,
+            "kalshi_ticker": cfg.kalshi_ticker,
+            "polymarket_us_slug": cfg.polymarket_us_slug,
+            "yes_means": cfg.yes_means,
+            "kalshi_ok": bool(kalshi_q),
+            "poly_ok": bool(poly_q),
+            "row_count": len(kept),
+            "kalshi_quote": kalshi_q,
+            "poly_quote": poly_q,
         })
-    all_rows.sort(key=lambda r: r["ev_per_dollar"], reverse=True)
+
+    all_rows.sort(key=lambda r: r["locked_spread_cents"], reverse=True)
     return {
         "rows": all_rows,
-        "events": events_info,
+        "pairs": pairs_info,
         "contracts": contracts,
-        "price_side": price_side,
+        "min_spread_cents": min_spread_cents,
+        "poly_us_taker_fee_bps": POLY_US_TAKER_FEE_BPS,
         "errors": errors,
     }

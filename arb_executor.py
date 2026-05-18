@@ -1,0 +1,364 @@
+"""
+Two-legged arbitrage executor.
+
+Fires both legs of an arb opportunity concurrently with IOC time-in-force
+so unmatched orders don't rest on the book. Handles the four outcomes:
+
+    A. Both fully filled at matching size      -> success
+    B. Both partially filled at matching size  -> success at reduced size
+    C. Asymmetric fill                         -> market-hedge the imbalance
+                                                  on the under-filled venue,
+                                                  capped by MAX_HEDGE_SLIPPAGE_C
+    D. Both unfilled                            -> no-op
+
+DRY_RUN gate wraps every venue call. In dry-run, returns a synthetic
+"filled at quoted price" result so the rest of the system can be tested
+end-to-end without touching real money.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import threading
+import uuid
+from dataclasses import dataclass, field
+from typing import Any
+
+from kalshi_client import KalshiClient, KalshiError, KalshiNotConfigured
+from polymarket_us_client import (
+    PolymarketUSClient,
+    PolymarketUSError,
+    PolymarketUSNotConfigured,
+)
+
+log = logging.getLogger("arb_executor")
+
+MAX_HEDGE_SLIPPAGE_C = float(os.getenv("MAX_HEDGE_SLIPPAGE_C", "2.0"))
+
+
+# ---- result types ---------------------------------------------------------
+
+@dataclass
+class LegResult:
+    venue: str
+    market_id: str
+    side: str
+    action: str         # "buy" or "sell"
+    requested_qty: int
+    filled_qty: float = 0.0
+    avg_fill_price: float | None = None
+    order_id: str | None = None
+    status: str = "pending"   # "filled", "partial", "rejected", "dry_run"
+    error: str | None = None
+    raw: dict | None = None
+
+    def as_dict(self) -> dict:
+        return {
+            "venue": self.venue,
+            "market_id": self.market_id,
+            "side": self.side,
+            "action": self.action,
+            "requested_qty": self.requested_qty,
+            "filled_qty": self.filled_qty,
+            "avg_fill_price": self.avg_fill_price,
+            "order_id": self.order_id,
+            "status": self.status,
+            "error": self.error,
+        }
+
+
+@dataclass
+class ArbResult:
+    pair_key: str
+    direction: str
+    requested_contracts: int
+    matched_contracts: float = 0.0
+    locked_spread_per_contract: float | None = None
+    realized_pl: float | None = None
+    kalshi_leg: LegResult | None = None
+    poly_leg: LegResult | None = None
+    hedge_leg: LegResult | None = None
+    status: str = "pending"   # "success", "partial_success", "hedged", "failed", "dry_run"
+    notes: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "pair_key": self.pair_key,
+            "direction": self.direction,
+            "requested_contracts": self.requested_contracts,
+            "matched_contracts": self.matched_contracts,
+            "locked_spread_per_contract": self.locked_spread_per_contract,
+            "realized_pl": self.realized_pl,
+            "kalshi_leg": self.kalshi_leg.as_dict() if self.kalshi_leg else None,
+            "poly_leg":   self.poly_leg.as_dict()   if self.poly_leg   else None,
+            "hedge_leg":  self.hedge_leg.as_dict()  if self.hedge_leg  else None,
+            "status": self.status,
+            "notes": self.notes,
+        }
+
+
+# ---- order placement helpers ---------------------------------------------
+
+def _place_kalshi(kc: KalshiClient, leg: dict, contracts: int,
+                  tif: str = "immediate_or_cancel",
+                  dry_run: bool = True) -> LegResult:
+    res = LegResult(
+        venue="kalshi",
+        market_id=leg["market_id"],
+        side=leg["side"],
+        action="buy",
+        requested_qty=contracts,
+    )
+    limit_cents = max(1, min(99, int(round(leg["price"] * 100))))
+    if dry_run:
+        res.status = "dry_run"
+        res.filled_qty = float(contracts)
+        res.avg_fill_price = limit_cents / 100.0
+        log.info(
+            "[DRY_RUN] kalshi: would place BUY %s %s@%dc tif=%s",
+            leg["side"], contracts, limit_cents, tif
+        )
+        res.raw = {"dry_run": True, "limit_cents": limit_cents, "tif": tif}
+        return res
+    if not kc.configured:
+        res.status = "rejected"
+        res.error = "Kalshi not configured"
+        return res
+    client_order_id = uuid.uuid4().hex
+    try:
+        resp = kc.place_order(
+            ticker=leg["market_id"],
+            side=leg["side"],
+            action="buy",
+            count=contracts,
+            limit_price_cents=limit_cents,
+            client_order_id=client_order_id,
+            time_in_force=tif,
+        )
+    except KalshiError as e:
+        res.status = "rejected"
+        res.error = str(e)
+        return res
+    res.raw = resp
+    order = resp.get("order") or {}
+    res.order_id = order.get("order_id") or client_order_id
+    # Kalshi response includes the order's current state — try a few field
+    # name candidates, since the API has evolved.
+    res.filled_qty = float(order.get("taker_fill_count")
+                           or order.get("filled_count")
+                           or order.get("filled_qty") or 0)
+    res.status = "filled" if res.filled_qty >= contracts else (
+        "partial" if res.filled_qty > 0 else "rejected"
+    )
+    if res.filled_qty > 0:
+        fill_cost_cents = (order.get("taker_fill_cost_cents")
+                           or order.get("filled_cost_cents"))
+        if fill_cost_cents:
+            res.avg_fill_price = float(fill_cost_cents) / 100.0 / res.filled_qty
+        else:
+            res.avg_fill_price = limit_cents / 100.0
+    return res
+
+
+def _place_poly(pc: PolymarketUSClient, leg: dict, contracts: int,
+                tif: str = "IOC",
+                dry_run: bool = True) -> LegResult:
+    res = LegResult(
+        venue="polymarket_us",
+        market_id=leg["market_id"],
+        side=leg["side"],
+        action="buy",
+        requested_qty=contracts,
+    )
+    if dry_run:
+        res.status = "dry_run"
+        res.filled_qty = float(contracts)
+        res.avg_fill_price = float(leg["price"])
+        log.info(
+            "[DRY_RUN] polymarket: would place: BUY %s %s shares @ %.4f tif=%s",
+            leg["side"], contracts, leg["price"], tif
+        )
+        res.raw = {"dry_run": True, "limit_price": leg["price"], "tif": tif}
+        return res
+    if not pc.configured:
+        res.status = "rejected"
+        res.error = "Polymarket US not configured"
+        return res
+    try:
+        resp = pc.place_order(
+            slug=leg["market_id"],
+            side=leg["side"],
+            action="buy",
+            quantity=float(contracts),
+            limit_price=float(leg["price"]),
+            tif=tif,
+            order_type="limit",
+        )
+    except PolymarketUSError as e:
+        res.status = "rejected"
+        res.error = str(e)
+        return res
+    res.raw = resp
+    res.order_id = resp.get("id")
+    # Polymarket returns executions[] when synchronousExecution was requested.
+    # The IOC TIF causes the unfilled portion to cancel immediately, so we
+    # can read filled size from executions or by re-fetching the order.
+    executions = resp.get("executions") or []
+    filled = sum(float(e.get("lastShares") or 0) for e in executions)
+    if filled == 0:
+        # IOC: nothing matched.
+        res.status = "rejected"
+        res.filled_qty = 0
+        return res
+    res.filled_qty = filled
+    notional = sum(float(e.get("lastShares") or 0) * float(e.get("lastPx") or 0)
+                   for e in executions)
+    res.avg_fill_price = (notional / filled) if filled else None
+    res.status = "filled" if filled >= contracts else "partial"
+    return res
+
+
+# ---- threaded concurrent firing -----------------------------------------
+
+def _fire_both_legs(kc: KalshiClient, pc: PolymarketUSClient,
+                    opp: dict, contracts: int,
+                    dry_run: bool) -> tuple[LegResult, LegResult]:
+    """Fire both legs concurrently via threads. Return (kalshi_result,
+    poly_result). Threads are used (not asyncio) because both SDKs are
+    sync."""
+    results: dict[str, LegResult] = {}
+
+    def _k():
+        results["k"] = _place_kalshi(kc, opp["kalshi_leg"], contracts,
+                                     dry_run=dry_run)
+
+    def _p():
+        results["p"] = _place_poly(pc, opp["poly_leg"], contracts,
+                                   dry_run=dry_run)
+
+    tk = threading.Thread(target=_k, daemon=True)
+    tp = threading.Thread(target=_p, daemon=True)
+    tk.start(); tp.start()
+    tk.join(); tp.join()
+    return results["k"], results["p"]
+
+
+# ---- hedging --------------------------------------------------------------
+
+def _hedge_imbalance(kc: KalshiClient, pc: PolymarketUSClient,
+                     opp: dict, k_res: LegResult, p_res: LegResult,
+                     dry_run: bool) -> LegResult | None:
+    """If one leg over-filled relative to the other, buy more of the
+    under-filled side at market (up to MAX_HEDGE_SLIPPAGE_C of slippage)
+    to restore the matched-pair invariant.
+
+    Returns the hedge LegResult, or None if no hedge was needed/possible.
+    """
+    matched = min(k_res.filled_qty, p_res.filled_qty)
+    short_kalshi = p_res.filled_qty - matched
+    short_poly   = k_res.filled_qty - matched
+    if short_kalshi == 0 and short_poly == 0:
+        return None
+
+    if short_kalshi > 0:
+        # Need MORE Kalshi contracts. Buy at ask + slippage cap.
+        target_leg = opp["kalshi_leg"]
+        max_price = min(1.0, target_leg["price"] + MAX_HEDGE_SLIPPAGE_C / 100.0)
+        hedge_leg = {
+            **target_leg,
+            "price": max_price,
+        }
+        return _place_kalshi(kc, hedge_leg, int(short_kalshi), dry_run=dry_run)
+
+    # short_poly > 0: need MORE Polymarket shares.
+    target_leg = opp["poly_leg"]
+    max_price = min(1.0, target_leg["price"] + MAX_HEDGE_SLIPPAGE_C / 100.0)
+    hedge_leg = {
+        **target_leg,
+        "price": max_price,
+    }
+    return _place_poly(pc, hedge_leg, int(short_poly), dry_run=dry_run)
+
+
+# ---- public entry --------------------------------------------------------
+
+def execute_arb(opp: dict, contracts: int, *,
+                kalshi_client: KalshiClient | None = None,
+                poly_client: PolymarketUSClient | None = None,
+                dry_run: bool = True) -> ArbResult:
+    """Execute a two-leg arb opportunity.
+
+    opp: a row from scanner.run_scan(). Must contain pair_key, direction,
+         kalshi_leg, poly_leg, cost_per_contract.
+    contracts: number of contract pairs to attempt (one Kalshi contract +
+         one Polymarket share per pair).
+    """
+    kc = kalshi_client or KalshiClient()
+    pc = poly_client or PolymarketUSClient()
+
+    result = ArbResult(
+        pair_key=opp["pair_key"],
+        direction=opp["direction"],
+        requested_contracts=contracts,
+    )
+
+    # Fire both legs concurrently.
+    k_res, p_res = _fire_both_legs(kc, pc, opp, contracts, dry_run)
+    result.kalshi_leg = k_res
+    result.poly_leg = p_res
+
+    # Hedge any imbalance.
+    hedge = _hedge_imbalance(kc, pc, opp, k_res, p_res, dry_run)
+    if hedge is not None:
+        result.hedge_leg = hedge
+        # After hedging, recompute filled-on-each-side:
+        if hedge.venue == "kalshi":
+            k_res.filled_qty += hedge.filled_qty
+        else:
+            p_res.filled_qty += hedge.filled_qty
+
+    matched = min(k_res.filled_qty, p_res.filled_qty)
+    result.matched_contracts = matched
+
+    # Status + P&L. Locked spread is per-contract; total P&L = matched ×
+    # locked spread (minus any extra slippage from hedging at worse-than-
+    # quoted prices, which is implicit in the realized fills).
+    quoted_cost = opp["cost_per_contract"]
+    if matched > 0:
+        actual_cost_per_contract = (
+            (k_res.avg_fill_price or opp["kalshi_leg"]["price"])
+            + (p_res.avg_fill_price or opp["poly_leg"]["price"])
+            + opp["kalshi_leg"]["fee"]
+            + opp["poly_leg"]["fee"]
+        )
+        # If hedging happened, fold in the slippage cost vs the quoted leg.
+        if hedge and hedge.avg_fill_price is not None:
+            quoted_leg_price = (
+                opp["kalshi_leg"]["price"] if hedge.venue == "kalshi"
+                else opp["poly_leg"]["price"]
+            )
+            slip = max(0.0, hedge.avg_fill_price - quoted_leg_price)
+            actual_cost_per_contract += slip * hedge.filled_qty / matched
+        result.locked_spread_per_contract = 1.0 - actual_cost_per_contract
+        result.realized_pl = result.locked_spread_per_contract * matched
+
+    if dry_run:
+        result.status = "dry_run"
+    elif matched == 0:
+        result.status = "failed"
+        result.notes.append("Neither leg filled.")
+    elif hedge is not None:
+        result.status = "hedged"
+        result.notes.append(
+            f"Imbalance hedged with {int(hedge.filled_qty)} extra "
+            f"{hedge.venue} contracts."
+        )
+    elif matched >= contracts:
+        result.status = "success"
+    else:
+        result.status = "partial_success"
+        result.notes.append(
+            f"Both legs partially filled at {int(matched)}/{contracts} contracts."
+        )
+    return result
