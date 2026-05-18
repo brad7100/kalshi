@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Eurovision EV">
+<meta name="apple-mobile-web-app-title" content="Arb Scanner">
 <meta name="theme-color" content="#111827">
-<title>Eurovision EV</title>
+<title>Arb Scanner</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
   body { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
@@ -18,91 +18,65 @@
 
 <header class="sticky top-0 z-30 bg-gray-800/95 backdrop-blur border-b border-gray-700 px-4 py-3 flex items-center justify-between">
   <div class="min-w-0">
-    <div class="text-sm font-semibold">Eurovision 2026 EV</div>
+    <div class="text-sm font-semibold">Arb Scanner — Kalshi ↔ Polymarket US</div>
     <div class="text-[11px] text-gray-400 num flex gap-2 flex-wrap">
       <span id="clock" class="text-white"></span>
-      <span id="status">Loading...</span>
+      <span id="status">Loading…</span>
     </div>
   </div>
   <div class="flex items-center gap-2 shrink-0">
-    <span id="televoteBadge" class="hidden text-[10px] font-bold bg-fuchsia-500 text-black px-2 py-1 rounded animate-pulse">LIVE</span>
     <span id="dryRunBadge" class="hidden text-[10px] font-bold bg-yellow-600 text-black px-2 py-1 rounded">DRY-RUN</span>
     <button id="settingsBtn" class="bg-gray-700 active:bg-gray-600 px-3 py-2 rounded text-sm">⚙</button>
     <button id="refreshBtn" class="bg-blue-600 active:bg-blue-700 px-3 py-2 rounded text-sm font-medium">↻</button>
   </div>
 </header>
-<div id="televoteBanner" class="hidden bg-fuchsia-900/60 border-b border-fuchsia-700 px-4 py-2 text-xs text-fuchsia-100">
-  <b>TELEVOTE MODE active</b> — hair-trigger alerts: <span id="televoteThresholds" class="num"></span>
-</div>
 
-<!-- Toasts (alerts) — anchored to the BOTTOM so they never overlap the
-     sticky header or the tab nav. Padded above iPhone home indicator. -->
-<div id="toasts"
-     class="fixed bottom-6 left-2 right-2 z-40 space-y-2 pointer-events-none flex flex-col"
-     style="padding-bottom: env(safe-area-inset-bottom, 0px);"></div>
+<div id="errBanner" class="hidden bg-red-900/60 border-b border-red-700 px-4 py-2 text-xs text-red-100"></div>
 
 <!-- Settings drawer -->
 <div id="settingsPanel" class="hidden bg-gray-800 border-b border-gray-700 px-4 py-3 text-sm space-y-3">
-  <div class="font-semibold">Alert settings</div>
+  <div class="font-semibold">Display & alerts</div>
   <label class="flex items-center justify-between gap-3">
-    <span>Buy alert when EV/$ ≥</span>
+    <span>Show pairs with spread ≥</span>
     <span class="flex items-center gap-1">
-      <input id="setBuyEV" type="number" step="0.1" min="0" max="20" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
-      <span>%</span>
-    </span>
-  </label>
-  <label class="flex items-center justify-between gap-3">
-    <span>Sell alert when bid − fair ≥</span>
-    <span class="flex items-center gap-1">
-      <input id="setSellC" type="number" step="0.1" min="0" max="20" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
+      <input id="setMinSpread" type="number" step="0.1" min="-10" max="20"
+             class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
       <span>¢</span>
     </span>
   </label>
   <label class="flex items-center justify-between gap-3">
-    <span>Min refire gap (same opportunity)</span>
-    <span class="flex items-center gap-1">
-      <input id="setCooldown" type="number" step="60" min="60" max="3600" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
-      <span>s</span>
-    </span>
+    <span>Default contracts per execution</span>
+    <input id="setContracts" type="number" step="1" min="1" max="10000"
+           class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
   </label>
-  <div class="text-[10px] text-gray-500">Alerts fire on threshold *crossings* only — they stay silent while the condition keeps holding. This gap is a safety net against noise.</div>
-  <label class="flex items-center justify-between gap-3">
-    <span>Play sound</span>
-    <input id="setSound" type="checkbox" class="w-5 h-5" />
-  </label>
-  <label class="flex items-center justify-between gap-3">
-    <span>Vibrate</span>
-    <input id="setVibrate" type="checkbox" class="w-5 h-5" />
-  </label>
-  <div class="flex flex-wrap gap-2 pt-1">
-    <button id="testAlertBtn" class="flex-1 bg-blue-700 active:bg-blue-800 py-2 rounded text-xs">Test alert</button>
-    <button id="enableNotifBtn" class="flex-1 bg-purple-700 active:bg-purple-800 py-2 rounded text-xs">Enable system notifications</button>
+  <div class="text-[10px] text-gray-500">
+    Push alerts (ntfy) are configured server-side via env vars
+    (<code>NTFY_TOPIC</code>, <code>NTFY_ARB_SPREAD_C</code>). The threshold
+    above only filters what's shown in the UI.
   </div>
   <div class="flex flex-wrap gap-2">
     <button id="testNtfyBtn" class="flex-1 bg-amber-700 active:bg-amber-800 py-2 rounded text-xs">Send ntfy test push</button>
-    <button id="resetMutesBtn" class="flex-1 bg-gray-600 active:bg-gray-500 py-2 rounded text-xs">Reset muted alerts</button>
   </div>
-  <div id="muteCount" class="text-[11px] text-gray-400"></div>
-  <div id="notifStatus" class="text-[11px] text-gray-400"></div>
   <div id="ntfyStatus" class="text-[11px] text-gray-400"></div>
+  <div id="healthDump" class="text-[10px] text-gray-500 font-mono whitespace-pre-wrap"></div>
 </div>
 
 <nav class="sticky top-[57px] z-20 bg-gray-900/95 backdrop-blur border-b border-gray-800 flex text-sm">
-  <button data-tab="ev"  class="tab flex-1 py-3 border-b-2 border-green-500 text-green-400">+EV</button>
-  <button data-tab="pos" class="tab flex-1 py-3 border-b-2 border-transparent text-gray-400">Positions</button>
-  <button data-tab="all" class="tab flex-1 py-3 border-b-2 border-transparent text-gray-400">All</button>
+  <button data-tab="opps" class="tab flex-1 py-3 border-b-2 border-green-500 text-green-400">Opportunities</button>
+  <button data-tab="pos"  class="tab flex-1 py-3 border-b-2 border-transparent text-gray-400">Positions</button>
+  <button data-tab="all"  class="tab flex-1 py-3 border-b-2 border-transparent text-gray-400">All Pairs</button>
 </nav>
 
-<section id="tab-ev" class="px-3 pt-3">
-  <div id="evList" class="space-y-2">
-    <div class="text-gray-500 text-sm py-8 text-center">Loading scan...</div>
+<section id="tab-opps" class="px-3 pt-3">
+  <div id="oppsList" class="space-y-2">
+    <div class="text-gray-500 text-sm py-8 text-center">Loading scan…</div>
   </div>
 </section>
 
 <section id="tab-pos" class="px-3 pt-3 hidden">
-  <div id="balance" class="text-xs text-gray-400 mb-3"></div>
+  <div id="balanceGrid" class="grid grid-cols-2 gap-2 mb-3 text-xs"></div>
   <div id="posList" class="space-y-2">
-    <div class="text-gray-500 text-sm py-8 text-center">Loading positions...</div>
+    <div class="text-gray-500 text-sm py-8 text-center">Loading positions…</div>
   </div>
 </section>
 
@@ -110,11 +84,11 @@
   <div id="allList" class="rounded overflow-hidden bg-gray-800/40 divide-y divide-gray-800 text-xs num"></div>
 </section>
 
-<!-- Order Modal -->
+<!-- Execute Modal -->
 <div id="modal" class="fixed inset-0 bg-black/80 z-50 hidden items-end sm:items-center justify-center px-3">
   <div class="bg-gray-800 rounded-t-2xl sm:rounded-2xl w-full max-w-md p-5 mb-0">
     <div class="flex justify-between items-start mb-3">
-      <h3 id="modalTitle" class="text-lg font-bold">Order</h3>
+      <h3 id="modalTitle" class="text-lg font-bold">Execute arb</h3>
       <button onclick="closeModal()" class="text-gray-400 text-2xl leading-none">&times;</button>
     </div>
     <div id="modalBody" class="space-y-3 text-sm"></div>
@@ -122,7 +96,7 @@
     <div class="flex gap-2 mt-4">
       <button onclick="closeModal()" class="flex-1 bg-gray-700 active:bg-gray-600 py-3 rounded font-medium">Close</button>
       <button id="modalQuoteBtn" class="flex-1 bg-blue-600 active:bg-blue-700 py-3 rounded font-medium">Quote</button>
-      <button id="modalConfirmBtn" class="flex-1 bg-green-600 active:bg-green-700 py-3 rounded font-medium hidden">Confirm</button>
+      <button id="modalConfirmBtn" class="flex-1 bg-green-600 active:bg-green-700 py-3 rounded font-medium hidden">Execute</button>
     </div>
   </div>
 </div>
@@ -132,961 +106,451 @@ let scanData = null;
 let positionsData = null;
 let currentIntent = null;
 let currentToken = null;
-let maxOrderUsd = 50;       // updated from /health
+let maxOrderUsd = 50;
 let lastHealth = null;
+let dryRun = true;
+const settings = {
+  minSpreadC: -5.0,
+  contracts: 100,
+};
+
+// ---- utility -------------------------------------------------------------
 
 function updateClock() {
   const el = document.getElementById('clock');
   if (el) el.textContent = new Date().toLocaleTimeString();
 }
+setInterval(updateClock, 1000);
+updateClock();
 
-// ---- Eurovision 2026 lineup ----------------------------------------------
-// Source: Wikipedia (https://en.wikipedia.org/wiki/Eurovision_Song_Contest_2026)
-// Tuple shape: [ISO2, flagEmoji, artist, song].
-const LINEUP = {
-  "Albania":        ["AL", "🇦🇱", "Alis", "Nân"],
-  "Armenia":        ["AM", "🇦🇲", "Simón", "Paloma Rumba"],
-  "Australia":      ["AU", "🇦🇺", "Delta Goodrem", "Eclipse"],
-  "Austria":        ["AT", "🇦🇹", "Cosmó", "Tanzschein"],
-  "Azerbaijan":     ["AZ", "🇦🇿", "Jiva", "Just Go"],
-  "Belgium":        ["BE", "🇧🇪", "Essyla", "Dancing on the Ice"],
-  "Bulgaria":       ["BG", "🇧🇬", "Dara", "Bangaranga"],
-  "Croatia":        ["HR", "🇭🇷", "Lelek", "Andromeda"],
-  "Cyprus":         ["CY", "🇨🇾", "Antigoni", "Jalla"],
-  "Czechia":        ["CZ", "🇨🇿", "Daniel Zizka", "Crossroads"],
-  "Denmark":        ["DK", "🇩🇰", "Søren Torpegaard Lund", "Før vi går hjem"],
-  "Estonia":        ["EE", "🇪🇪", "Vanilla Ninja", "Too Epic to Be True"],
-  "Finland":        ["FI", "🇫🇮", "Linda Lampenius & Pete Parkkonen", "Liekinheitin"],
-  "France":         ["FR", "🇫🇷", "Monroe", "Regarde!"],
-  "Georgia":        ["GE", "🇬🇪", "Bzikebi", "On Replay"],
-  "Germany":        ["DE", "🇩🇪", "Sarah Engels", "Fire"],
-  "Greece":         ["GR", "🇬🇷", "Akylas", "Ferto"],
-  "Israel":         ["IL", "🇮🇱", "Noam Bettan", "Michelle"],
-  "Italy":          ["IT", "🇮🇹", "Sal Da Vinci", "Per sempre sì"],
-  "Latvia":         ["LV", "🇱🇻", "Atvara", "Ēnā"],
-  "Lithuania":      ["LT", "🇱🇹", "Lion Ceccah", "Sólo quiero más"],
-  "Luxembourg":     ["LU", "🇱🇺", "Eva Marija", "Mother Nature"],
-  "Malta":          ["MT", "🇲🇹", "Aidan", "Bella"],
-  "Moldova":        ["MD", "🇲🇩", "Satoshi", "Viva, Moldova!"],
-  "Montenegro":     ["ME", "🇲🇪", "Tamara Živković", "Nova zora"],
-  "Norway":         ["NO", "🇳🇴", "Jonas Lovv", "Ya Ya Ya"],
-  "Poland":         ["PL", "🇵🇱", "Alicja", "Pray"],
-  "Portugal":       ["PT", "🇵🇹", "Bandidos do Cante", "Rosa"],
-  "Romania":        ["RO", "🇷🇴", "Alexandra Căpitănescu", "Choke Me"],
-  "San Marino":     ["SM", "🇸🇲", "Senhit", "Superstar"],
-  "Serbia":         ["RS", "🇷🇸", "Lavina", "Kraj mene"],
-  "Sweden":         ["SE", "🇸🇪", "Felicia", "My System"],
-  "Switzerland":    ["CH", "🇨🇭", "Veronica Fusaro", "Alice"],
-  "Ukraine":        ["UA", "🇺🇦", "Leléka", "Ridnym"],
-  "United Kingdom": ["GB", "🇬🇧", "Look Mum No Computer", "Eins, Zwei, Drei"],
-};
-
-// ---- Event styling -------------------------------------------------------
-// Render order on every page where rows are grouped: Winner first
-// (most liquid + most contracts), then Jury, then Televote (live during
-// the show). Anything else falls through to "Other" at the bottom.
-const EVENT_ORDER = ['Winner', 'Jury', 'Televote'];
-
-// All class names are STATIC literals so the Tailwind CDN scanner picks
-// them up. Don't interpolate the color name.
-const EVENT_STYLE = {
-  'Winner':   { icon: '🏆', text: 'text-blue-200',   border: 'border-l-blue-500',
-                head: 'bg-blue-900/40 border-blue-700' },
-  'Jury':     { icon: '⚖️', text: 'text-purple-200', border: 'border-l-purple-500',
-                head: 'bg-purple-900/40 border-purple-700' },
-  'Televote': { icon: '🎤', text: 'text-pink-200',   border: 'border-l-pink-500',
-                head: 'bg-pink-900/40 border-pink-700' },
-};
-const DEFAULT_EVENT_STYLE = { icon: '•', text: 'text-gray-200', border: 'border-l-gray-500',
-                              head: 'bg-gray-700/40 border-gray-600' };
-
-function eventStyle(label) {
-  return EVENT_STYLE[label] || DEFAULT_EVENT_STYLE;
+function fmtC(c, signed) {
+  if (c == null) return '—';
+  const sign = (signed && c > 0) ? '+' : '';
+  return `${sign}${c.toFixed(2)}¢`;
+}
+function fmtPrice(p) {
+  if (p == null) return '—';
+  return `${(p * 100).toFixed(1)}¢`;
+}
+function fmtUsd(d) {
+  if (d == null) return '—';
+  const sign = d < 0 ? '-$' : '$';
+  return `${sign}${Math.abs(d).toFixed(2)}`;
+}
+function setStatus(text, color) {
+  const el = document.getElementById('status');
+  el.textContent = text;
+  el.className = color || 'text-gray-400';
+}
+function showError(text) {
+  const el = document.getElementById('errBanner');
+  if (!text) { el.classList.add('hidden'); el.textContent = ''; return; }
+  el.classList.remove('hidden');
+  el.textContent = text;
 }
 
-function groupByEvent(items) {
-  const map = new Map();
-  for (const x of items) {
-    const k = x.event_label || 'Other';
-    if (!map.has(k)) map.set(k, []);
-    map.get(k).push(x);
-  }
-  const out = [];
-  for (const k of EVENT_ORDER) if (map.has(k)) out.push([k, map.get(k)]);
-  for (const [k, v] of map.entries()) if (!EVENT_ORDER.includes(k)) out.push([k, v]);
-  return out;
-}
-
-function eventHeader(label, countText) {
-  const s = eventStyle(label);
-  return `
-    <div class="${s.head} border border-l-4 ${s.border} rounded-md px-3 py-2 mt-3 mb-2 flex items-center justify-between">
-      <div class="flex items-center gap-2 ${s.text}">
-        <span class="text-base">${s.icon}</span>
-        <span class="text-xs font-bold uppercase tracking-wider">${label}</span>
-      </div>
-      <span class="text-[10px] text-gray-400 font-normal num">${countText}</span>
-    </div>
-  `;
-}
-
-function lineup(country) {
-  const l = LINEUP[country];
-  if (!l) return { iso: '', flag: '', artist: '', song: '' };
-  return { iso: l[0], flag: l[1], artist: l[2], song: l[3] };
-}
-
-function countrySlug(country) {
-  return country.toLowerCase().replace(/ /g, '-');
-}
-
-// Country flag image from flagcdn.com (free, served via Cloudflare).
-// `size` is a Tailwind height class like "h-6" or "h-8". Falls back to
-// the Unicode flag emoji if we don't have the ISO code.
-function flagImg(country, size = 'h-6') {
-  const l = lineup(country);
-  if (!l.iso) return `<span class="text-lg">${l.flag || ''}</span>`;
-  const iso = l.iso.toLowerCase();
-  return `<img src="https://flagcdn.com/h60/${iso}.png"
-               srcset="https://flagcdn.com/h120/${iso}.png 2x"
-               alt="${country} flag"
-               loading="lazy"
-               class="inline-block ${size} w-auto rounded-sm shadow ring-1 ring-white/10 align-middle" />`;
-}
-
-function participantUrl(country) {
-  // Eurovision.tv canonical participant page — has the official video,
-  // lyrics, artist bio, and voting info.
-  return `https://eurovision.tv/event/vienna-2026/participants/${countrySlug(country)}`;
-}
-
-function youtubeUrl(country, artist, song) {
-  // Specific query biased toward the official Eurovision channel video.
-  const q = encodeURIComponent(`${artist} ${song} Eurovision 2026 official`);
-  return `https://www.youtube.com/results?search_query=${q}`;
-}
-
-// All external links: open in a real new tab. iOS standalone PWAs default
-// to replacing the in-app webview on plain <a> taps; window.open() via the
-// onclick handler reliably routes through to Safari instead, so the EV
-// app stays open behind the link tap.
-function extLinkAttrs(url) {
-  return `href="${url}" target="_blank" rel="noopener noreferrer" ` +
-         `onclick="window.open(this.href,'_blank','noopener,noreferrer');return false;"`;
-}
-
-function lineupSnippetHtml(country) {
-  const l = lineup(country);
-  if (!l.artist) return '';
-  const partU = participantUrl(country);
-  const ytU = youtubeUrl(country, l.artist, l.song);
-  return `
-    <div class="text-[11px] text-gray-300 mt-0.5 truncate">
-      <a ${extLinkAttrs(partU)} class="hover:underline">
-        <span class="text-white">${l.artist}</span>
-        <span class="text-gray-400"> — </span>
-        <span class="italic">${l.song}</span>
-      </a>
-    </div>
-    <div class="flex gap-2 mt-1 text-[10px]">
-      <a ${extLinkAttrs(ytU)} class="text-red-300 active:text-red-400">▶ Watch video</a>
-      <a ${extLinkAttrs(partU)} class="text-blue-300 active:text-blue-400">Song page</a>
-    </div>
-  `;
-}
-
-// ---- Alert engine ---------------------------------------------------------
-
-const settings = {
-  buyEvPct: 1.5,        // alert when EV/$ >= this %
-  sellEdgeC: 1.0,       // alert when bid - fair >= this many cents
-  minRefireSec: 600,    // min seconds between fires of same key (safety net)
-  soundOn: true,
-  vibrateOn: true,
-};
-// Rising-edge alert state. For each key:
-//   { above: bool — was the trigger condition met on the previous tick?,
-//     lastFireAt: number — ms timestamp of last fire }
-// An alert only fires on the BELOW->ABOVE transition (plus a min refire
-// gap as a safety net for noise around the threshold).
-const alertState = {};
-let mutedAlerts = new Set();   // keys the user has explicitly silenced
-let audioCtx = null;
-
-function loadMutes() {
-  try {
-    const arr = JSON.parse(localStorage.getItem('ev_muted') || '[]');
-    mutedAlerts = new Set(arr);
-  } catch { mutedAlerts = new Set(); }
-}
-function saveMutes() {
-  localStorage.setItem('ev_muted', JSON.stringify([...mutedAlerts]));
-}
-function muteKey(key) {
-  mutedAlerts.add(key);
-  saveMutes();
-}
-function resetMutes() {
-  mutedAlerts.clear();
-  Object.keys(alertState).forEach(k => delete alertState[k]);
-  saveMutes();
-}
+// ---- settings persistence ------------------------------------------------
 
 function loadSettings() {
   try {
-    Object.assign(settings, JSON.parse(localStorage.getItem('ev_settings') || '{}'));
+    Object.assign(settings, JSON.parse(localStorage.getItem('arb_settings') || '{}'));
   } catch {}
-  document.getElementById('setBuyEV').value = settings.buyEvPct;
-  document.getElementById('setSellC').value = settings.sellEdgeC;
-  document.getElementById('setCooldown').value = settings.minRefireSec;
-  document.getElementById('setSound').checked = settings.soundOn;
-  document.getElementById('setVibrate').checked = settings.vibrateOn;
-  updateNotifStatus();
-  loadMutes();
+  document.getElementById('setMinSpread').value = settings.minSpreadC;
+  document.getElementById('setContracts').value = settings.contracts;
 }
-
 function saveSettings() {
-  settings.buyEvPct = parseFloat(document.getElementById('setBuyEV').value) || 0;
-  settings.sellEdgeC = parseFloat(document.getElementById('setSellC').value) || 0;
-  settings.minRefireSec = parseInt(document.getElementById('setCooldown').value, 10) || 600;
-  settings.soundOn = document.getElementById('setSound').checked;
-  settings.vibrateOn = document.getElementById('setVibrate').checked;
-  localStorage.setItem('ev_settings', JSON.stringify(settings));
+  settings.minSpreadC = parseFloat(document.getElementById('setMinSpread').value);
+  settings.contracts  = parseInt(document.getElementById('setContracts').value, 10) || 100;
+  localStorage.setItem('arb_settings', JSON.stringify(settings));
 }
 
-function playBeep(kind) {
-  if (!settings.soundOn) return;
-  try {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    // BUY = rising two-tone, SELL = falling two-tone
-    const freqs = kind === 'sell' ? [880, 587] : [587, 880];
-    freqs.forEach((f, i) => {
-      const o = audioCtx.createOscillator();
-      const g = audioCtx.createGain();
-      o.connect(g); g.connect(audioCtx.destination);
-      o.frequency.value = f;
-      const t = audioCtx.currentTime + i * 0.18;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
-      o.start(t); o.stop(t + 0.17);
-    });
-  } catch (e) { /* iOS pre-gesture: silently skip */ }
-}
+// ---- fetch helpers -------------------------------------------------------
 
-// kind: "buy" or "sell"   side: "yes" or "no"
-// action: { type: "buy"|"sell", payload: row_or_position }  optional
-function showToast(message, kind, side, muteKeyVal, action) {
-  const wrap = document.getElementById('toasts');
-  // Color: BUY YES = green, BUY NO = amber, SELL YES = red, SELL NO = pink.
-  let colors;
-  if (kind === 'sell') {
-    colors = side === 'no'
-      ? 'bg-pink-900/90 border-pink-500 text-pink-50'
-      : 'bg-red-900/90 border-red-500 text-red-100';
-  } else {
-    colors = side === 'no'
-      ? 'bg-amber-900/90 border-amber-500 text-amber-50'
-      : 'bg-green-900/90 border-green-500 text-green-100';
-  }
-  const actionLabel = action
-    ? (action.type === 'sell' ? 'Sell' : (action.payload?.side === 'no' ? 'Buy NO' : 'Buy YES'))
-    : null;
-  const el = document.createElement('div');
-  el.className = `pointer-events-auto border rounded-lg px-3 py-2 shadow-lg text-sm font-medium ${colors} animate-pulse`;
-  el.innerHTML = `
-    <div class="flex items-start gap-2">
-      <div class="flex-1 min-w-0">${message}</div>
-      <button class="shrink-0 text-[11px] bg-black/30 active:bg-black/50 px-2 py-1 rounded" data-close>×</button>
-    </div>
-    <div class="flex gap-2 mt-2">
-      ${actionLabel
-        ? `<button class="flex-1 text-xs font-bold bg-white/20 active:bg-white/30 py-2 rounded" data-action>${actionLabel}</button>`
-        : ''}
-      <button class="${actionLabel ? 'flex-1' : 'w-full'} text-xs bg-black/30 active:bg-black/50 py-2 rounded" data-mute>Mute this</button>
-    </div>
-  `;
-  const close = () => {
-    el.style.opacity = '0';
-    el.style.transition = 'opacity 200ms';
-    setTimeout(() => el.remove(), 250);
-  };
-  el.querySelector('[data-mute]').addEventListener('click', () => {
-    if (muteKeyVal) muteKey(muteKeyVal);
-    close();
-    updateMuteCount();
-  });
-  el.querySelector('[data-close]').addEventListener('click', close);
-  if (actionLabel) {
-    el.querySelector('[data-action]').addEventListener('click', () => {
-      if (action.type === 'sell') openSell(action.payload);
-      else openBuy(action.payload);
-      close();
-    });
-  }
-  wrap.appendChild(el);
-  setTimeout(() => { el.classList.remove('animate-pulse'); }, 1200);
-  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 600ms'; }, 14000);
-  setTimeout(() => { el.remove(); }, 15000);
-}
-
-/**
- * Rising-edge alert. Fires only when the trigger condition newly becomes
- * true (was below threshold last tick, now above), with a safety-net
- * min refire gap. Returns true if it fired.
- *
- *   key           — unique identifier ("KXEUROVISION-26-AUS:yes:buy")
- *   conditionMet  — boolean, is the trigger currently satisfied?
- *   kind          — "buy" or "sell" (color/sound)
- *   title, body   — alert content
- */
-function fireAlert(key, conditionMet, kind, side, title, body, action) {
-  const st = alertState[key] || { above: false, lastFireAt: 0 };
-  const now = Date.now();
-  if (!conditionMet) {
-    st.above = false;
-    alertState[key] = st;
-    return false;
-  }
-  if (mutedAlerts.has(key)) {
-    st.above = true;
-    alertState[key] = st;
-    return false;
-  }
-  const rising = !st.above;
-  const longGap = now - st.lastFireAt > settings.minRefireSec * 1000;
-  if (!rising && !longGap) {
-    st.above = true;
-    alertState[key] = st;
-    return false;
-  }
-  st.above = true;
-  st.lastFireAt = now;
-  alertState[key] = st;
-  playBeep(kind);
-  if (settings.vibrateOn && navigator.vibrate) {
-    navigator.vibrate(kind === 'sell' ? [120, 80, 120, 80, 120] : [200, 100, 200]);
-  }
-  showToast(
-    `<b>${title}</b><br><span class="text-xs font-normal opacity-90">${body}</span>`,
-    kind, side, key, action
-  );
-  if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
-    try { new Notification(title, { body, tag: key, renotify: false }); } catch {}
-  }
-  return true;
-}
-
-function updateMuteCount() {
-  const el = document.getElementById('muteCount');
-  if (!el) return;
-  if (mutedAlerts.size === 0) {
-    el.textContent = 'No alerts muted.';
-  } else {
-    el.textContent = `${mutedAlerts.size} alert${mutedAlerts.size === 1 ? '' : 's'} muted.`;
-  }
-}
-
-function checkAlerts() {
-  let fired = 0;
-  // BUY: every row in the scan emits a (key, conditionMet) signal. The
-  // toast carries an "action" so the user can tap "Buy YES" / "Buy NO"
-  // right from the alert without navigating to the +EV tab.
-  for (const r of (scanData?.rows || [])) {
-    const evPct = (r.ev_per_dollar || 0) * 100;
-    const side = r.side || 'yes';
-    const sideU = side.toUpperCase();
-    const key = `${r.ticker}:${side}:buy`;
-    const conditionMet = evPct >= settings.buyEvPct;
-    const title = `BUY ${sideU} ${r.event_label}: ${r.country} +${evPct.toFixed(1)}% EV`;
-    const body = `${sideU} ask ${(r.kalshi_ask*100).toFixed(0)}¢ vs fair ${(r.true_prob*100).toFixed(0)}¢ (${r.ticker})`;
-    const action = { type: 'buy', payload: r };
-    if (fireAlert(key, conditionMet, 'buy', side, title, body, action)) fired++;
-  }
-  // SELL: same logic for held positions.
-  for (const p of (positionsData?.positions || [])) {
-    if (!p.position || p.sell_edge_net_per_contract == null) continue;
-    const netEdgeC = p.sell_edge_net_per_contract * 100;
-    const side = p.side || 'yes';
-    const sideU = side.toUpperCase();
-    const key = `${p.ticker}:${side}:sell`;
-    const conditionMet = netEdgeC >= settings.sellEdgeC;
-    const title = `SELL ${sideU} ${p.event_label}: ${p.country} +${netEdgeC.toFixed(1)}¢ NET above fair`;
-    const body = `${sideU} bid ${(p.current_yes_bid*100).toFixed(0)}¢ vs fair ${(p.true_prob*100).toFixed(0)}¢, after ${(p.sell_fee_per_contract*100).toFixed(1)}¢ fee — ${Math.abs(p.position)} contracts (${p.ticker})`;
-    const action = { type: 'sell', payload: p };
-    if (fireAlert(key, conditionMet, 'sell', side, title, body, action)) fired++;
-  }
-  updateMuteCount();
-  return fired;
-}
-
-function updateNotifStatus() {
-  const el = document.getElementById('notifStatus');
-  if (!('Notification' in window)) {
-    el.textContent = 'System notifications not supported in this browser.';
-    return;
-  }
-  el.textContent = `Notification permission: ${Notification.permission}`;
-}
-
-function updateTelevoteMode(health) {
-  const banner = document.getElementById('televoteBanner');
-  const badge = document.getElementById('televoteBadge');
-  const active = !!(health && health.televote_mode_active);
-  banner.classList.toggle('hidden', !active);
-  badge.classList.toggle('hidden', !active);
-  if (active && health.active_thresholds) {
-    const t = health.active_thresholds;
-    document.getElementById('televoteThresholds').textContent =
-      `buy ≥ ${t.buy_ev_pct}%, sell ≥ ${t.sell_edge_c}¢, scan ${t.interval_sec}s`;
-  }
-}
-
-function updateNtfyStatus(health) {
-  const el = document.getElementById('ntfyStatus');
-  if (!el) return;
-  if (health && health.ntfy_configured) {
-    el.innerHTML = '<span class="text-green-400">ntfy push: enabled</span> — alerts fire even when this app is closed.';
-  } else {
-    el.innerHTML = '<span class="text-yellow-400">ntfy push: not configured.</span> Set NTFY_TOPIC in Railway env vars.';
-  }
-}
-
-async function fetchJSON(url, opts = {}) {
-  const res = await fetch(url, opts);
-  const ct = res.headers.get('content-type') || '';
+async function api(path, init) {
+  const res = await fetch(path, init);
   if (!res.ok) {
-    let detail = '';
-    try { detail = ct.includes('json') ? JSON.stringify(await res.json()) : await res.text(); } catch {}
-    throw new Error(`${res.status}: ${detail || res.statusText}`);
+    const text = await res.text();
+    throw new Error(`${res.status} ${res.statusText}: ${text}`);
   }
   return res.json();
 }
 
-async function refresh() {
-  setStatus('Refreshing...');
+async function refreshHealth() {
   try {
-    const [health, scan, pos] = await Promise.all([
-      fetchJSON('/health'),
-      fetchJSON('/api/scan?contracts=100&price_side=mid'),
-      fetchJSON('/api/positions'),
-    ]);
-    lastHealth = health;
-    if (health.max_order_usd != null) maxOrderUsd = health.max_order_usd;
-    document.getElementById('dryRunBadge').classList.toggle('hidden', !health.dry_run);
-    updateNtfyStatus(health);
-    updateTelevoteMode(health);
-    scanData = scan;
-    positionsData = pos;
-    renderEV();
-    renderPositions();
-    renderAll();
-    const fired = checkAlerts();
-    const stamp = 'Updated ' + new Date().toLocaleTimeString();
-    setStatus(fired ? `${stamp} • ${fired} alert${fired === 1 ? '' : 's'}` : stamp);
+    const h = await api('/health');
+    lastHealth = h;
+    maxOrderUsd = h.max_order_usd || 50;
+    dryRun = !!h.dry_run;
+    document.getElementById('dryRunBadge').classList.toggle('hidden', !h.dry_run);
+    document.getElementById('healthDump').textContent = JSON.stringify(h, null, 2);
   } catch (e) {
-    setStatus('Error: ' + e.message);
+    showError(`health: ${e.message}`);
   }
 }
 
-function setStatus(s) { document.getElementById('status').textContent = s; }
+// ---- scan / opportunities ------------------------------------------------
 
-function fmtCents(v) { return v == null ? '-' : (v * 100).toFixed(1) + 'c'; }
-function fmtPct(v) { return v == null ? '-' : (v * 100).toFixed(2) + '%'; }
+async function refreshScan() {
+  setStatus('Scanning…', 'text-blue-300');
+  try {
+    const data = await api(`/api/scan?contracts=${settings.contracts}&min_spread=${settings.minSpreadC}`);
+    scanData = data;
+    renderOpps();
+    renderAll();
+    const pos = data.rows.filter(r => r.locked_spread_cents > 0).length;
+    setStatus(`${data.pairs.length} pairs, ${pos} positive arbs`, 'text-gray-300');
+    if (data.errors && data.errors.length) {
+      showError(data.errors.join(' | '));
+    } else {
+      showError('');
+    }
+  } catch (e) {
+    setStatus('Error', 'text-red-400');
+    showError(`scan: ${e.message}`);
+  }
+}
 
-function renderEVCardHtml(r) {
-  const side = (r.side || 'yes').toUpperCase();
-  const isNo = r.side === 'no';
-  const card = isNo ? 'bg-amber-900/20 border-amber-700' : 'bg-green-900/20 border-green-800';
-  const badge = isNo ? 'text-amber-200 bg-amber-900/60' : 'text-emerald-200 bg-emerald-900/60';
-  const ev = isNo ? 'text-amber-300' : 'text-green-400';
-  const btn = isNo ? 'bg-amber-600 active:bg-amber-700' : 'bg-green-600 active:bg-green-700';
-  const evt = eventStyle(r.event_label);
+function legCard(leg, label) {
+  const venueColor = leg.venue === 'kalshi'
+    ? 'border-l-blue-500 bg-blue-900/20'
+    : 'border-l-fuchsia-500 bg-fuchsia-900/20';
   return `
-  <div class="${card} border border-l-4 ${evt.border} rounded-lg p-3">
-    <div class="flex items-start justify-between gap-3">
-      <div class="min-w-0">
-        <div class="flex items-center gap-2 flex-wrap">
-          ${flagImg(r.country, 'h-7')}
-          <div class="font-bold text-lg">${r.country}</div>
-          <div class="text-[10px] uppercase tracking-wide ${badge} px-2 py-0.5 rounded">${side}</div>
-        </div>
-        ${lineupSnippetHtml(r.country)}
-        <div class="text-[11px] text-gray-400 num break-all mt-1">${r.ticker}</div>
-        <div class="text-xs text-gray-300 mt-1 num">
-          ${side} ask <span class="text-white">${fmtCents(r.kalshi_ask)}</span>
-          &nbsp;•&nbsp; fair <span class="text-white">${fmtCents(r.true_prob)}</span>
-          &nbsp;•&nbsp; fee ${fmtCents(r.fee_per_contract)}
-        </div>
+    <div class="border-l-4 ${venueColor} rounded p-2 space-y-1">
+      <div class="text-[10px] uppercase tracking-wider text-gray-400">${label}</div>
+      <div class="text-xs font-mono truncate text-gray-300">${leg.market_id}</div>
+      <div class="flex items-baseline justify-between">
+        <span class="text-sm font-bold ${leg.side === 'yes' ? 'text-emerald-300' : 'text-rose-300'}">
+          ${leg.side.toUpperCase()}
+        </span>
+        <span class="text-base font-bold num">${fmtPrice(leg.price)}</span>
       </div>
-      <div class="text-right shrink-0">
-        <div class="${ev} font-bold text-base num">+${fmtPct(r.ev_per_dollar)}</div>
-        <button class="mt-1 ${btn} text-white text-xs font-bold px-3 py-2 rounded"
-                onclick='openBuy(${JSON.stringify(r).replace(/'/g, "&apos;")})'>BUY ${side}</button>
-      </div>
-    </div>
-  </div>`;
+      <div class="text-[10px] text-gray-500 num">fee ${fmtC(leg.fee_cents)}</div>
+    </div>`;
 }
 
-function renderEV() {
-  const el = document.getElementById('evList');
-  const pos = (scanData?.rows || []).filter(r => r.ev_per_dollar > 0);
-  if (!pos.length) {
-    el.innerHTML = '<div class="text-gray-500 text-sm py-8 text-center">No +EV signals right now.</div>';
-    return;
-  }
-  el.innerHTML = groupByEvent(pos).map(([label, rows]) =>
-    eventHeader(label, `${rows.length} signal${rows.length === 1 ? '' : 's'}`) +
-    `<div class="space-y-2">${rows.map(renderEVCardHtml).join('')}</div>`
-  ).join('');
-}
-
-function renderPositions() {
-  const el = document.getElementById('posList');
-  const bal = document.getElementById('balance');
-  if (!positionsData) { return; }
-  if (!positionsData.connected) {
-    bal.textContent = '';
-    const reason = positionsData.reason || 'unknown error';
-    const looksLikeMissingCreds = /missing|not configured|not set/i.test(reason);
-    const hint = looksLikeMissingCreds
-      ? 'Set KALSHI_KEY_ID and KALSHI_PRIVATE_KEY in Railway env vars.'
-      : 'Credentials are loaded but Kalshi rejected the request. Check the error detail above.';
-    el.innerHTML = `<div class="bg-yellow-900/30 border border-yellow-700 rounded p-3 text-yellow-200 text-sm">
-      <div class="font-semibold mb-1">Kalshi not connected</div>
-      <div class="break-all">${reason}</div>
-      <div class="mt-2 text-xs text-yellow-300/80">${hint}</div>
-    </div>`;
-    return;
-  }
-  const d = positionsData.debug || {};
-  const cash = positionsData.cash_available_dollars ?? positionsData.balance_dollars ?? 0;
-  const portfolio = positionsData.portfolio_value_dollars ?? 0;
-  const total = positionsData.total_account_dollars ?? (cash + portfolio);
-  const debugLine = d.kalshi_returned != null
-    ? `<div class="text-[10px] text-gray-500 num mt-0.5">Kalshi sent ${d.kalshi_returned}, showing ${d.shown} (dropped zero=${d.dropped_zero}, non-Eurovision=${d.dropped_non_eurovision})</div>`
-    : '';
-  bal.innerHTML = `
-    <div class="grid grid-cols-3 gap-1.5">
-      <div class="bg-gray-900/70 rounded px-2 py-1.5">
-        <div class="text-[10px] text-gray-400 uppercase tracking-wide">Cash available</div>
-        <div class="font-semibold num text-base text-white">$${cash.toFixed(2)}</div>
-      </div>
-      <div class="bg-gray-900/70 rounded px-2 py-1.5">
-        <div class="text-[10px] text-gray-400 uppercase tracking-wide">Positions</div>
-        <div class="font-semibold num text-base text-white">$${portfolio.toFixed(2)}</div>
-      </div>
-      <div class="bg-gray-900/70 rounded px-2 py-1.5">
-        <div class="text-[10px] text-gray-400 uppercase tracking-wide">Total</div>
-        <div class="font-semibold num text-base text-white">$${total.toFixed(2)}</div>
-      </div>
-    </div>
-    ${debugLine}
-  `;
-  const ps = positionsData.positions || [];
-  if (!ps.length) {
-    const sampleKeys = (d.sample_position_keys || []).join(', ') || '(no positions returned)';
-    el.innerHTML = `<div class="text-sm py-6 px-3 bg-gray-800/60 border border-gray-700 rounded">
-      <div class="text-gray-300 mb-2">No open Eurovision positions matched.</div>
-      <div class="text-[11px] text-gray-500 num">Kalshi response keys: ${(d.top_level_keys || []).join(', ') || '(none)'}</div>
-      <div class="text-[11px] text-gray-500 num mt-1">Sample position fields: ${sampleKeys}</div>
-    </div>`;
-    return;
-  }
-  const renderPosCard = (p) => {
-    const avgCost = p.avg_cost_cents != null ? p.avg_cost_cents.toFixed(1) + 'c' : '-';
-    const recognizedPrice = p.current_yes_ask != null;
-    const sideClass = p.side === 'no' ? 'text-amber-200 bg-amber-900/60' : 'text-emerald-200 bg-emerald-900/60';
-    const evt = eventStyle(p.event_label);
-
-    // Aggregate $ values
-    const usd = v => v == null ? '–' : '$' + v.toFixed(2);
-    const pnl = p.unrealized_pnl_dollars;
-    const pnlPct = p.unrealized_pnl_pct;
-    const pnlColor = pnl == null
-      ? 'text-gray-400'
-      : (pnl >= 0 ? 'text-green-400' : 'text-red-400');
-    const pnlSign = pnl == null ? '' : (pnl >= 0 ? '+' : '');
-    const valueBlock = `
-      <div class="mt-2 grid grid-cols-3 gap-1.5 text-[11px]">
-        <div class="bg-gray-900/70 rounded px-2 py-1">
-          <div class="text-gray-400 text-[10px] uppercase tracking-wide">Sell now</div>
-          <div class="font-semibold num text-white">${usd(p.sell_value_net_dollars)}</div>
-        </div>
-        <div class="bg-gray-900/70 rounded px-2 py-1">
-          <div class="text-gray-400 text-[10px] uppercase tracking-wide">Cost</div>
-          <div class="font-semibold num text-white">${usd(p.exposure_dollars)}</div>
-        </div>
-        <div class="bg-gray-900/70 rounded px-2 py-1">
-          <div class="text-gray-400 text-[10px] uppercase tracking-wide">Fair</div>
-          <div class="font-semibold num text-white">${usd(p.fair_value_dollars)}</div>
-        </div>
-      </div>
-      ${pnl != null ? `
-      <div class="mt-1 text-xs num">
-        <span class="text-gray-400">Unrealized:</span>
-        <span class="${pnlColor} font-bold">${pnlSign}${usd(Math.abs(pnl))}</span>
-        ${pnlPct != null ? `<span class="${pnlColor}"> (${pnlSign}${pnlPct.toFixed(1)}%)</span>` : ''}
-        <span class="text-[10px] text-gray-500">vs cost, after sell-fee</span>
-      </div>` : ''}
-      ${p.potential_return_dollars != null ? `
-      <div class="mt-1 text-xs num bg-emerald-950/40 border border-emerald-800/60 rounded px-2 py-1.5 flex items-baseline gap-2 flex-wrap">
-        <span class="text-emerald-300 uppercase tracking-wide text-[10px] font-bold">Potential return</span>
-        <span class="text-emerald-200 font-bold text-sm">${usd(p.potential_return_dollars)}</span>
-        ${p.profit_if_correct_dollars != null ? `<span class="text-emerald-400/80 text-[11px]">+${usd(p.profit_if_correct_dollars)} profit</span>` : ''}
-        <span class="text-[10px] text-gray-500">if ${p.side.toUpperCase()} wins</span>
-      </div>` : ''}
-    `;
-
-    const l = lineup(p.country);
-    return `
-    <div class="bg-gray-800/60 border border-gray-700 border-l-4 ${evt.border} rounded-lg p-3">
-      <div class="flex items-start justify-between gap-3">
+function oppCard(row) {
+  const positive = row.locked_spread_cents > 0;
+  const spreadColor = positive
+    ? 'text-emerald-400'
+    : (row.locked_spread_cents > -1 ? 'text-amber-400' : 'text-gray-500');
+  const totalLocked = (row.locked_spread / 100) * settings.contracts;  // $ at default size
+  const ringColor = positive ? 'ring-emerald-700' : 'ring-gray-700';
+  return `
+    <div class="bg-gray-800 rounded-lg p-3 ring-1 ${ringColor}">
+      <div class="flex items-baseline justify-between mb-2">
         <div class="min-w-0">
-          <div class="flex items-center gap-2 flex-wrap">
-            ${flagImg(p.country, 'h-6')}
-            <div class="font-bold">${p.country}</div>
-            <div class="text-[10px] uppercase tracking-wide ${sideClass} px-2 py-0.5 rounded">${p.side.toUpperCase()}</div>
-          </div>
-          ${lineupSnippetHtml(p.country)}
-          <div class="text-[11px] text-gray-500 num break-all mt-1">${p.ticker}</div>
-          <div class="text-xs text-gray-300 mt-1 num">
-            ${Math.abs(p.position)} contracts
-            &nbsp;•&nbsp; avg ${avgCost}
-            ${recognizedPrice ? `&nbsp;•&nbsp; now ${fmtCents(p.current_yes_ask)}` : '&nbsp;•&nbsp; <span class="text-yellow-400">no price feed</span>'}
-            ${p.true_prob != null ? `&nbsp;•&nbsp; fair ${fmtCents(p.true_prob)}` : ''}
-          </div>
+          <div class="text-sm font-semibold truncate">${row.label}</div>
+          <div class="text-[10px] text-gray-500 num">${row.pair_key} · dir ${row.direction}</div>
         </div>
         <div class="text-right shrink-0">
-          ${p.ev_per_dollar != null ? `<div class="text-[11px] ${p.ev_per_dollar > 0 ? 'text-green-400' : 'text-gray-400'} num">EV ${fmtPct(p.ev_per_dollar)}</div>` : ''}
-          <button class="mt-1 bg-red-600 active:bg-red-700 text-white text-xs font-bold px-3 py-2 rounded ${recognizedPrice ? '' : 'opacity-60'}"
-                  onclick='openSell(${JSON.stringify(p).replace(/'/g, "&apos;")})'>SELL</button>
+          <div class="text-xl font-bold ${spreadColor} num">${fmtC(row.locked_spread_cents, true)}</div>
+          <div class="text-[10px] text-gray-500">/ contract</div>
         </div>
       </div>
-      ${valueBlock}
+      <div class="grid grid-cols-2 gap-2">
+        ${legCard(row.kalshi_leg, 'Kalshi')}
+        ${legCard(row.poly_leg, 'Polymarket US')}
+      </div>
+      <div class="flex items-center justify-between mt-3 text-xs">
+        <div class="text-gray-400 num">
+          cost ${(row.cost_per_contract * 100).toFixed(2)}¢ · fees ${row.fees_total_cents.toFixed(2)}¢
+        </div>
+        <button class="bg-green-700 active:bg-green-800 text-white text-xs font-bold px-3 py-1.5 rounded ${positive ? '' : 'opacity-60'}"
+                ${positive ? '' : 'disabled'}
+                onclick='openExecute(${JSON.stringify(row).replace(/'/g, "\\u0027")})'>
+          ${positive ? 'Execute' : 'No arb'}
+        </button>
+      </div>
     </div>`;
-  };
+}
 
-  el.innerHTML = groupByEvent(ps).map(([label, rows]) =>
-    eventHeader(label, `${rows.length} position${rows.length === 1 ? '' : 's'}`) +
-    `<div class="space-y-2">${rows.map(renderPosCard).join('')}</div>`
-  ).join('');
-
-  // Portfolio totals: sum sell-now, cost, fair, potential-return across all positions
-  const totalSell = (ps || []).reduce((s, p) => s + (p.sell_value_net_dollars || 0), 0);
-  const totalCost = (ps || []).reduce((s, p) => s + (p.exposure_dollars || 0), 0);
-  const totalFair = (ps || []).reduce((s, p) => s + (p.fair_value_dollars || 0), 0);
-  const totalPotential = (ps || []).reduce((s, p) => s + (p.potential_return_dollars || 0), 0);
-  const totalPnl = totalSell - totalCost;
-  const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost * 100) : null;
-  const pnlColor = totalPnl >= 0 ? 'text-green-400' : 'text-red-400';
-  const pnlSign = totalPnl >= 0 ? '+' : '';
-  const dollarStr = v => '$' + v.toFixed(2);
-  bal.innerHTML += `
-    <div class="mt-2 text-[11px] num">
-      <span class="text-gray-400">Positions sell-now:</span>
-      <span class="text-white font-semibold">${dollarStr(totalSell)}</span>
-      &nbsp;•&nbsp; <span class="text-gray-400">cost:</span> <span>${dollarStr(totalCost)}</span>
-      &nbsp;•&nbsp; <span class="text-gray-400">fair:</span> <span>${dollarStr(totalFair)}</span>
-      &nbsp;•&nbsp; <span class="${pnlColor} font-bold">${pnlSign}${dollarStr(Math.abs(totalPnl))}${totalPnlPct != null ? ` (${pnlSign}${totalPnlPct.toFixed(1)}%)` : ''}</span>
-    </div>
-    <div class="mt-1 text-[11px] num bg-emerald-950/30 border border-emerald-800/40 rounded px-2 py-1">
-      <span class="text-emerald-300 uppercase tracking-wide text-[10px] font-bold">Max potential return</span>
-      <span class="text-emerald-200 font-bold ml-1">${dollarStr(totalPotential)}</span>
-      <span class="text-[10px] text-gray-500">if every position settles correctly</span>
-    </div>
-  `;
+function renderOpps() {
+  const el = document.getElementById('oppsList');
+  const rows = (scanData?.rows || []).filter(r => r.locked_spread_cents >= settings.minSpreadC);
+  if (rows.length === 0) {
+    el.innerHTML = `
+      <div class="text-gray-500 text-sm py-8 text-center">
+        No opportunities at or above ${settings.minSpreadC.toFixed(2)}¢/contract.
+        ${(scanData?.pairs?.length || 0) === 0
+          ? '<br><br>Add pairs to <code>markets.yaml</code> on the server.'
+          : ''}
+      </div>`;
+    return;
+  }
+  el.innerHTML = rows.map(oppCard).join('');
 }
 
 function renderAll() {
   const el = document.getElementById('allList');
-  const rows = scanData?.rows || [];
-  if (!rows.length) {
-    el.innerHTML = '<div class="text-gray-500 text-sm py-8 px-3 text-center">No markets loaded.</div>';
+  const rows = (scanData?.rows || []);
+  if (rows.length === 0) {
+    el.innerHTML = `<div class="text-gray-500 text-sm py-8 text-center">No data.</div>`;
     return;
   }
-  const renderRow = (r) => {
-    const side = (r.side || 'yes').toUpperCase();
-    const sideClass = r.side === 'no'
-      ? 'text-orange-300/90 bg-orange-900/30'
-      : 'text-emerald-300/90 bg-emerald-900/30';
-    const evt = eventStyle(r.event_label);
-    return `
-    <div class="flex justify-between items-center px-3 py-2 border-l-4 ${evt.border} bg-gray-800/40">
-      <div class="min-w-0">
-        <div class="flex items-center gap-2 flex-wrap">
-          ${flagImg(r.country, 'h-4')}
-          <span>${r.country}</span>
-          <span class="text-[9px] uppercase tracking-wide ${sideClass} px-1.5 py-0.5 rounded">${side}</span>
-        </div>
-        <div class="text-[10px] text-gray-500 num">${side} ask ${fmtCents(r.kalshi_ask)} / fair ${fmtCents(r.true_prob)}</div>
+  el.innerHTML = `
+    <div class="grid grid-cols-12 gap-2 px-3 py-2 bg-gray-900/60 text-[10px] uppercase tracking-wider text-gray-500">
+      <div class="col-span-5">Pair</div>
+      <div class="col-span-1 text-center">Dir</div>
+      <div class="col-span-2 text-right">Kalshi</div>
+      <div class="col-span-2 text-right">Poly</div>
+      <div class="col-span-2 text-right">Spread</div>
+    </div>
+    ${rows.map(r => `
+      <div class="grid grid-cols-12 gap-2 px-3 py-2 hover:bg-gray-800/50">
+        <div class="col-span-5 truncate">${r.label}</div>
+        <div class="col-span-1 text-center text-gray-400">${r.direction}</div>
+        <div class="col-span-2 text-right">${r.kalshi_leg.side.toUpperCase()} ${fmtPrice(r.kalshi_leg.price)}</div>
+        <div class="col-span-2 text-right">${r.poly_leg.side.toUpperCase()} ${fmtPrice(r.poly_leg.price)}</div>
+        <div class="col-span-2 text-right ${r.locked_spread_cents > 0 ? 'text-emerald-400' : 'text-gray-500'}">${fmtC(r.locked_spread_cents, true)}</div>
       </div>
-      <div class="text-right ${r.ev_per_dollar > 0 ? 'text-green-400' : 'text-gray-400'} num">
-        ${fmtPct(r.ev_per_dollar)}
-      </div>
+    `).join('')}`;
+}
+
+// ---- positions -----------------------------------------------------------
+
+async function refreshPositions() {
+  try {
+    const data = await api('/api/positions');
+    positionsData = data;
+    renderPositions();
+  } catch (e) {
+    document.getElementById('posList').innerHTML =
+      `<div class="text-red-400 text-sm py-4 text-center">positions: ${e.message}</div>`;
+  }
+}
+
+function renderPositions() {
+  const grid = document.getElementById('balanceGrid');
+  if (!positionsData) {
+    grid.innerHTML = ''; return;
+  }
+  const k = positionsData.kalshi_connected;
+  const p = positionsData.polymarket_us_connected;
+  grid.innerHTML = `
+    <div class="bg-blue-900/30 border border-blue-700 rounded p-2">
+      <div class="text-[10px] uppercase text-blue-300">Kalshi</div>
+      <div class="text-sm">${k ? 'connected' : '<span class="text-red-400">not configured</span>'}</div>
+      ${k ? `<div class="num text-[11px] text-gray-300 mt-1">cash ${fmtUsd(positionsData.kalshi_cash_dollars)} · pv ${fmtUsd(positionsData.kalshi_portfolio_value_dollars)}</div>` : ''}
+    </div>
+    <div class="bg-fuchsia-900/30 border border-fuchsia-700 rounded p-2">
+      <div class="text-[10px] uppercase text-fuchsia-300">Polymarket US</div>
+      <div class="text-sm">${p ? 'connected' : '<span class="text-red-400">not configured</span>'}</div>
     </div>`;
-  };
-  // Group, then sort each group by descending EV so the most interesting
-  // markets in each event float to the top of their section.
-  el.innerHTML = groupByEvent(rows).map(([label, group]) => {
-    const sorted = group.slice().sort((a, b) => (b.ev_per_dollar || 0) - (a.ev_per_dollar || 0));
-    return eventHeader(label, `${sorted.length} markets`) +
-           `<div class="rounded overflow-hidden divide-y divide-gray-800">${sorted.map(renderRow).join('')}</div>`;
-  }).join('');
-}
 
-// Render a row of $-amount quick-pick buttons. priceCents = limit price in
-// cents (1–99). Each button picks `floor(amount * 100 / priceCents)` contracts.
-function dollarPickerHtml(priceCents, maxContracts) {
-  const amounts = [5, 10, 15, 20, 25, 50, 100];
-  const buttons = amounts.map(a => {
-    let n = Math.max(1, Math.floor((a * 100) / Math.max(1, priceCents)));
-    if (maxContracts != null) n = Math.min(n, maxContracts);
-    return `<button type="button" class="dollarBtn bg-gray-700 active:bg-gray-600 text-xs py-2 rounded num"
-              data-contracts="${n}">$${a}<br><span class="text-[10px] text-gray-400">${n}c</span></button>`;
-  }).join('');
-  return `
-    <div class="text-[11px] text-gray-400 mt-3">Quick size (at ${priceCents}¢ limit):</div>
-    <div class="grid grid-cols-4 gap-2 mt-1">${buttons}</div>
-  `;
-}
-
-function wireDollarPicker() {
-  document.querySelectorAll('.dollarBtn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const n = parseInt(btn.dataset.contracts, 10);
-      const inp = document.getElementById('orderCount');
-      if (inp) inp.value = n;
-    });
-  });
-}
-
-function openBuy(row) {
-  const side = row.side || 'yes';
-  currentIntent = { action: 'buy', side, ticker: row.ticker, country: row.country, count: 100 };
-  const priceC = Math.max(1, Math.round((row.kalshi_ask || 0.01) * 100));
-  showModal(`BUY ${side.toUpperCase()} — ${row.country} (${row.event_label || ''})`, `
-    <div class="grid grid-cols-2 gap-2 text-xs">
-      <div>Ticker</div><div class="text-right num">${row.ticker}</div>
-      <div>${side.toUpperCase()} ask</div><div class="text-right num">${fmtCents(row.kalshi_ask)}</div>
-      <div>Fair P(${side.toUpperCase()})</div><div class="text-right num">${fmtCents(row.true_prob)}</div>
-      <div>EV/$</div><div class="text-right num text-green-400">${fmtPct(row.ev_per_dollar)}</div>
+  const el = document.getElementById('posList');
+  const pairs = positionsData.pairs || [];
+  const held = pairs.filter(r => Math.abs(r.kalshi.shares) > 0 || Math.abs(r.polymarket.shares) > 0);
+  if (held.length === 0) {
+    el.innerHTML = `<div class="text-gray-500 text-sm py-8 text-center">No open positions on any registered pair.</div>`;
+    return;
+  }
+  el.innerHTML = held.map(r => `
+    <div class="bg-gray-800 rounded-lg p-3">
+      <div class="text-sm font-semibold mb-2">${r.label}</div>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <div class="border-l-4 border-l-blue-500 bg-blue-900/20 rounded p-2">
+          <div class="text-[10px] uppercase text-gray-400">Kalshi</div>
+          <div class="num">${r.kalshi.shares.toFixed(0)} ${r.kalshi.side ? r.kalshi.side.toUpperCase() : ''}</div>
+          <div class="text-[10px] text-gray-400 num">exp ${fmtUsd(r.kalshi.exposure_dollars)} · fees ${fmtUsd(r.kalshi.fees_paid_dollars)}</div>
+        </div>
+        <div class="border-l-4 border-l-fuchsia-500 bg-fuchsia-900/20 rounded p-2">
+          <div class="text-[10px] uppercase text-gray-400">Polymarket US</div>
+          <div class="num">${r.polymarket.shares.toFixed(0)} ${r.polymarket.side ? r.polymarket.side.toUpperCase() : ''}</div>
+          <div class="text-[10px] text-gray-400 num">basis ${fmtUsd(r.polymarket.cost_basis)}</div>
+        </div>
+      </div>
     </div>
-    <label class="block text-sm mt-2">Contracts
-      <input id="orderCount" type="number" value="100" min="1" max="10000"
-             class="w-full mt-1 bg-gray-900 border border-gray-700 rounded px-2 py-2 text-base num" />
-    </label>
-    ${dollarPickerHtml(priceC, null)}
-    <div id="capWarning" class="hidden mt-3 bg-orange-900/40 border border-orange-700 rounded p-2 text-xs">
-      <div class="text-orange-200 font-semibold">Notional exceeds $${maxOrderUsd.toFixed(0)} cap</div>
-      <label class="flex items-center gap-2 mt-1 text-orange-100">
-        <input id="overrideCap" type="checkbox" class="w-4 h-4" />
-        <span>I confirm — place this larger buy anyway</span>
-      </label>
-    </div>
-  `);
-  wireDollarPicker();
-  const recomputeCap = () => {
-    const count = parseInt(document.getElementById('orderCount').value, 10) || 0;
-    const notional = (count * priceC) / 100;
-    const warn = document.getElementById('capWarning');
-    if (notional > maxOrderUsd) warn.classList.remove('hidden');
-    else { warn.classList.add('hidden'); const cb = document.getElementById('overrideCap'); if (cb) cb.checked = false; }
-  };
-  document.getElementById('orderCount').addEventListener('input', recomputeCap);
-  document.querySelectorAll('.dollarBtn').forEach(b => b.addEventListener('click', () => setTimeout(recomputeCap, 0)));
-  recomputeCap();
+  `).join('');
 }
 
-function openSell(p) {
-  currentIntent = {
-    action: 'sell', side: p.side === 'no' ? 'no' : 'yes',
-    ticker: p.ticker, country: p.country, count: Math.abs(p.position),
-  };
-  const priceC = Math.max(1, Math.round((p.current_yes_bid || 0.01) * 100));
-  const pos = Math.abs(p.position);
-  showModal(`SELL ${p.side.toUpperCase()} — ${p.country}`, `
-    <div class="grid grid-cols-2 gap-2 text-xs">
-      <div>Ticker</div><div class="text-right num">${p.ticker}</div>
-      <div>Position</div><div class="text-right num">${pos} ${p.side.toUpperCase()}</div>
-      <div>${p.side.toUpperCase()} bid</div><div class="text-right num">${fmtCents(p.current_yes_bid)}</div>
-      <div>Fair P(${p.side.toUpperCase()})</div><div class="text-right num">${fmtCents(p.true_prob)}</div>
-    </div>
-    <label class="block text-sm mt-2">Contracts to sell
-      <input id="orderCount" type="number" value="${pos}" min="1" max="${pos}"
-             class="w-full mt-1 bg-gray-900 border border-gray-700 rounded px-2 py-2 text-base num" />
-    </label>
-    ${dollarPickerHtml(priceC, pos)}
-    <div class="mt-1"><button type="button" id="sellAllBtn" class="text-xs underline text-gray-400">Sell all ${pos}</button></div>
-  `);
-  wireDollarPicker();
-  document.getElementById('sellAllBtn')?.addEventListener('click', () => {
-    const inp = document.getElementById('orderCount');
-    if (inp) inp.value = pos;
-  });
-}
+// ---- execute modal -------------------------------------------------------
 
-function showModal(title, bodyHtml) {
-  document.getElementById('modalTitle').textContent = title;
-  document.getElementById('modalBody').innerHTML = bodyHtml;
-  document.getElementById('modalResult').innerHTML = '';
-  document.getElementById('modalQuoteBtn').classList.remove('hidden');
-  document.getElementById('modalConfirmBtn').classList.add('hidden');
+function openExecute(row) {
+  currentIntent = row;
   currentToken = null;
-  const modal = document.getElementById('modal');
-  modal.classList.remove('hidden');
-  modal.classList.add('flex');
+  document.getElementById('modalTitle').textContent = `Execute: ${row.label}`;
+  const contracts = settings.contracts;
+  const lockedTotal = (row.locked_spread) * contracts;
+  document.getElementById('modalBody').innerHTML = `
+    <div class="text-xs text-gray-400">Pair <span class="text-white font-mono">${row.pair_key}</span> · dir ${row.direction}</div>
+    <div class="grid grid-cols-2 gap-2 text-xs">
+      ${legCard(row.kalshi_leg, 'Kalshi leg')}
+      ${legCard(row.poly_leg, 'Polymarket leg')}
+    </div>
+    <div class="bg-gray-900 rounded p-3 space-y-2">
+      <label class="flex items-center justify-between gap-3">
+        <span>Contracts (per leg)</span>
+        <input id="modalContracts" type="number" min="1" max="10000" value="${contracts}"
+               class="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-24 num text-right" />
+      </label>
+      <div class="text-xs text-gray-400 num">
+        Combined notional ≈ <span id="modalNotional">${fmtUsd((row.kalshi_leg.price + row.poly_leg.price) * contracts)}</span>
+        · MAX ${fmtUsd(maxOrderUsd)}
+      </div>
+      <div class="text-xs num">
+        Locked spread at this size: <span class="text-emerald-300 font-bold" id="modalLocked">${fmtUsd(lockedTotal)}</span>
+      </div>
+      ${dryRun ? '<div class="text-[11px] text-amber-300">DRY-RUN: server will not place real orders.</div>' : ''}
+    </div>`;
+  document.getElementById('modalResult').innerHTML = '';
+  document.getElementById('modalConfirmBtn').classList.add('hidden');
+  document.getElementById('modalQuoteBtn').classList.remove('hidden');
+  document.getElementById('modal').classList.remove('hidden');
+  document.getElementById('modal').classList.add('flex');
+  document.getElementById('modalContracts').addEventListener('input', (e) => {
+    const n = parseInt(e.target.value, 10) || 0;
+    document.getElementById('modalNotional').textContent =
+      fmtUsd((row.kalshi_leg.price + row.poly_leg.price) * n);
+    document.getElementById('modalLocked').textContent =
+      fmtUsd(row.locked_spread * n);
+  });
 }
 
 function closeModal() {
-  const modal = document.getElementById('modal');
-  modal.classList.add('hidden');
-  modal.classList.remove('flex');
+  document.getElementById('modal').classList.add('hidden');
+  document.getElementById('modal').classList.remove('flex');
   currentIntent = null;
   currentToken = null;
 }
 
-document.getElementById('modalQuoteBtn').addEventListener('click', async () => {
+async function doQuote(allowOverCap) {
   if (!currentIntent) return;
-  const qty = parseInt(document.getElementById('orderCount').value, 10);
-  if (!qty || qty <= 0) { setResult('Invalid quantity', 'red'); return; }
-  // Cap-bypass checkbox: only relevant for BUYs over the cap; sells ignore.
-  const overrideEl = document.getElementById('overrideCap');
-  const allow_over_cap = !!(overrideEl && overrideEl.checked);
-  const capWarn = document.getElementById('capWarning');
-  const warnVisible = capWarn && !capWarn.classList.contains('hidden');
-  if (currentIntent.action === 'buy' && warnVisible && !allow_over_cap) {
-    setResult('Tick the confirmation checkbox to place a buy above the cap.', 'red');
-    return;
-  }
-  setResult('Quoting...', 'yellow');
+  const contracts = parseInt(document.getElementById('modalContracts').value, 10) || 0;
+  if (!contracts) return;
+  const resEl = document.getElementById('modalResult');
+  resEl.innerHTML = '<div class="text-gray-400">Quoting…</div>';
   try {
-    const quote = await fetchJSON('/api/recommend', {
+    const body = JSON.stringify({
+      pair_key: currentIntent.pair_key,
+      direction: currentIntent.direction,
+      contracts,
+      allow_over_cap: !!allowOverCap,
+    });
+    const data = await api('/api/arb/recommend', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...currentIntent, count: qty, allow_over_cap }),
+      body,
     });
-    currentToken = quote.token;
-    setResult(`
-      <div class="text-xs num">
-        Limit: <span class="text-white">${quote.limit_price_cents}c</span> &nbsp;•&nbsp;
-        Notional: <span class="text-white">$${quote.notional_dollars.toFixed(2)}</span> &nbsp;•&nbsp;
-        Quoted EV/$: <span class="${quote.ev_per_dollar_at_quote > 0 ? 'text-green-400' : 'text-gray-400'}">${fmtPct(quote.ev_per_dollar_at_quote)}</span>
-      </div>
-      <div class="text-[11px] text-gray-400 mt-1">Token valid for 60s — tap Confirm to fire.</div>
-    `, 'gray');
+    currentToken = data.token;
+    resEl.innerHTML = `
+      <div class="bg-gray-900 rounded p-3 text-xs space-y-1">
+        <div>Notional <b class="num">${fmtUsd(data.notional_dollars)}</b>${data.over_cap ? ' <span class="text-amber-400">(over cap)</span>' : ''}</div>
+        <div class="text-gray-500">Token valid for 60s. Tap <b>Execute</b> to fire both legs.</div>
+      </div>`;
     document.getElementById('modalQuoteBtn').classList.add('hidden');
     document.getElementById('modalConfirmBtn').classList.remove('hidden');
   } catch (e) {
-    setResult('Quote failed: ' + e.message, 'red');
+    const msg = e.message || '';
+    if (msg.includes('exceeds MAX_ORDER_USD') && !allowOverCap) {
+      resEl.innerHTML = `
+        <div class="bg-amber-900/40 border border-amber-700 rounded p-3 text-xs space-y-2">
+          <div class="text-amber-200">${msg}</div>
+          <button id="overCapBtn" class="bg-amber-700 active:bg-amber-800 text-xs font-bold px-3 py-2 rounded w-full">
+            Override cap and re-quote
+          </button>
+        </div>`;
+      document.getElementById('overCapBtn').addEventListener('click', () => doQuote(true));
+    } else {
+      resEl.innerHTML = `<div class="text-red-400 text-xs">${msg}</div>`;
+    }
   }
-});
+}
 
-document.getElementById('modalConfirmBtn').addEventListener('click', async () => {
+async function doExecute() {
   if (!currentToken) return;
-  document.getElementById('modalConfirmBtn').disabled = true;
-  setResult('Submitting...', 'yellow');
+  const resEl = document.getElementById('modalResult');
+  resEl.innerHTML = '<div class="text-gray-400">Executing…</div>';
   try {
-    const out = await fetchJSON('/api/order', {
+    const data = await api('/api/arb/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: currentToken }),
     });
-    if (out.dry_run) {
-      setResult(`<span class="text-yellow-400 font-bold text-base">${out.message}</span>
-        <pre class="text-[10px] text-gray-400 mt-2 overflow-x-auto">${JSON.stringify(out.would_have_sent, null, 2)}</pre>`, 'gray');
-    } else {
-      setResult(`<span class="text-green-400 font-bold">Order placed.</span>
-        <pre class="text-[10px] text-gray-400 mt-2 overflow-x-auto">${JSON.stringify(out.kalshi, null, 2)}</pre>`, 'gray');
-      setTimeout(refresh, 1500);
-    }
-  } catch (e) {
-    setResult('Order failed: ' + e.message, 'red');
-  } finally {
-    document.getElementById('modalConfirmBtn').disabled = false;
-    currentToken = null;
+    const r = data.result;
+    const statusColor = ({
+      success: 'text-emerald-300',
+      partial_success: 'text-amber-300',
+      hedged: 'text-amber-300',
+      failed: 'text-red-300',
+      dry_run: 'text-blue-300',
+    })[r.status] || 'text-gray-300';
+    resEl.innerHTML = `
+      <div class="bg-gray-900 rounded p-3 text-xs space-y-1">
+        <div class="font-bold ${statusColor}">${r.status.toUpperCase()}${data.dry_run ? ' (DRY-RUN)' : ''}</div>
+        <div class="num">matched ${r.matched_contracts.toFixed(0)} / ${r.requested_contracts}</div>
+        ${r.locked_spread_per_contract != null ? `<div class="num">locked ${(r.locked_spread_per_contract * 100).toFixed(2)}¢/contract · realized ${fmtUsd(r.realized_pl)}</div>` : ''}
+        ${(r.notes && r.notes.length) ? r.notes.map(n => `<div class="text-gray-400">• ${n}</div>`).join('') : ''}
+        <details class="mt-2 text-[10px] text-gray-500">
+          <summary class="cursor-pointer">Legs</summary>
+          <pre class="whitespace-pre-wrap mt-1">${JSON.stringify(r, null, 2)}</pre>
+        </details>
+      </div>`;
     document.getElementById('modalConfirmBtn').classList.add('hidden');
+    refreshPositions();
+  } catch (e) {
+    resEl.innerHTML = `<div class="text-red-400 text-xs">${e.message}</div>`;
   }
-});
-
-function setResult(html, color) {
-  const el = document.getElementById('modalResult');
-  const colorClass = { red: 'bg-red-900/40 border-red-700', yellow: 'bg-yellow-900/30 border-yellow-700', gray: 'bg-gray-700/40 border-gray-600' }[color] || 'bg-gray-700/40 border-gray-600';
-  el.className = 'mt-3 text-sm border rounded p-2 ' + colorClass;
-  el.innerHTML = html;
 }
 
-// Tabs
-document.querySelectorAll('.tab').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(b => {
-      b.classList.remove('border-green-500', 'text-green-400');
-      b.classList.add('border-transparent', 'text-gray-400');
-    });
-    btn.classList.add('border-green-500', 'text-green-400');
-    btn.classList.remove('border-transparent', 'text-gray-400');
-    ['ev', 'pos', 'all'].forEach(t => {
-      document.getElementById('tab-' + t).classList.toggle('hidden', t !== btn.dataset.tab);
-    });
+// ---- tab nav -------------------------------------------------------------
+
+function activateTab(name) {
+  document.querySelectorAll('.tab').forEach(b => {
+    const active = b.dataset.tab === name;
+    b.classList.toggle('border-green-500', active);
+    b.classList.toggle('text-green-400', active);
+    b.classList.toggle('border-transparent', !active);
+    b.classList.toggle('text-gray-400', !active);
   });
+  document.getElementById('tab-opps').classList.toggle('hidden', name !== 'opps');
+  document.getElementById('tab-pos').classList.toggle('hidden', name !== 'pos');
+  document.getElementById('tab-all').classList.toggle('hidden', name !== 'all');
+  if (name === 'pos') refreshPositions();
+}
+document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
+
+// ---- wiring --------------------------------------------------------------
+
+document.getElementById('refreshBtn').addEventListener('click', () => {
+  refreshScan();
+  refreshPositions();
 });
 
-document.getElementById('refreshBtn').addEventListener('click', refresh);
-
-// Settings panel wiring
 document.getElementById('settingsBtn').addEventListener('click', () => {
-  document.getElementById('settingsPanel').classList.toggle('hidden');
-});
-['setBuyEV', 'setSellC', 'setCooldown', 'setSound', 'setVibrate'].forEach(id => {
-  document.getElementById(id).addEventListener('change', saveSettings);
-});
-document.getElementById('testAlertBtn').addEventListener('click', () => {
-  // Force-clear cooldown for the test key, then fire two alerts.
-  delete lastAlertAt['__test:buy'];
-  delete lastAlertAt['__test:sell'];
-  fireAlert('__test:buy', 'buy', 'BUY test', 'Two-tone rising beep + vibrate.');
-  setTimeout(() => fireAlert('__test:sell', 'sell', 'SELL test', 'Two-tone falling beep + longer vibrate.'), 700);
-});
-document.getElementById('enableNotifBtn').addEventListener('click', async () => {
-  if (!('Notification' in window)) { updateNotifStatus(); return; }
-  try {
-    await Notification.requestPermission();
-  } catch {}
-  updateNotifStatus();
+  const p = document.getElementById('settingsPanel');
+  const wasHidden = p.classList.contains('hidden');
+  p.classList.toggle('hidden');
+  if (!wasHidden) saveSettings();
 });
 
-document.getElementById('resetMutesBtn').addEventListener('click', () => {
-  resetMutes();
-  updateMuteCount();
+document.getElementById('setMinSpread').addEventListener('change', () => {
+  saveSettings();
+  refreshScan();
+});
+document.getElementById('setContracts').addEventListener('change', () => {
+  saveSettings();
+  refreshScan();
 });
 
 document.getElementById('testNtfyBtn').addEventListener('click', async () => {
-  const btn = document.getElementById('testNtfyBtn');
   const el = document.getElementById('ntfyStatus');
-  btn.disabled = true;
-  const prev = btn.textContent;
-  btn.textContent = 'Sending...';
+  el.textContent = 'sending…';
   try {
-    const res = await fetch('/api/ntfy/test', { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      el.innerHTML = `<span class="text-red-400">ntfy test failed:</span> ${data.detail || res.status}`;
-    } else {
-      el.innerHTML = `<span class="text-green-400">ntfy test pushed</span> via ${data.server || 'ntfy.sh'}. Check your phone.`;
-    }
-  } catch (e) {
-    el.innerHTML = `<span class="text-red-400">ntfy test error:</span> ${e.message}`;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = prev;
-  }
+    const r = await api('/api/ntfy/test', { method: 'POST' });
+    el.textContent = `OK: ${r.server}`;
+  } catch (e) { el.textContent = `error: ${e.message}`; }
 });
 
-loadSettings();
-updateClock();
-setInterval(updateClock, 1000);
-refresh();
-setInterval(refresh, 20000);
+document.getElementById('modalQuoteBtn').addEventListener('click', () => doQuote(false));
+document.getElementById('modalConfirmBtn').addEventListener('click', doExecute);
+
+(async function init() {
+  loadSettings();
+  await refreshHealth();
+  await refreshScan();
+  setInterval(refreshScan, 30_000);   // light auto-refresh
+  setInterval(refreshHealth, 60_000);
+})();
 </script>
 </body>
 </html>

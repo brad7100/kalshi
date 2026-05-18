@@ -160,7 +160,8 @@ class KalshiClient:
     def place_order(self, ticker: str, side: str, action: str,
                     count: int, limit_price_cents: int,
                     client_order_id: str,
-                    order_type: str = "limit") -> dict:
+                    order_type: str = "limit",
+                    time_in_force: str | None = None) -> dict:
         """Place an order.
 
         side: 'yes' or 'no'
@@ -171,6 +172,9 @@ class KalshiClient:
             for NO orders; we route to the right field.
         client_order_id: idempotency token; the same value with the same
             intent will not double-fire.
+        time_in_force: 'immediate_or_cancel', 'fill_or_kill', or
+            'good_till_canceled'. None = Kalshi default (GTC). Use IOC for
+            arb legs so an unmatched order doesn't rest on the book.
         """
         body: dict[str, Any] = {
             "ticker": ticker,
@@ -186,7 +190,18 @@ class KalshiClient:
             body["no_price"] = int(limit_price_cents)
         else:
             raise KalshiError(f"invalid side: {side!r}")
+        if time_in_force:
+            body["time_in_force"] = time_in_force
         return self._request("POST", "/portfolio/orders", body=body)
 
     def cancel_order(self, order_id: str) -> dict:
         return self._request("DELETE", f"/portfolio/orders/{order_id}")
+
+    def get_order(self, order_id: str) -> dict:
+        return self._request("GET", f"/portfolio/orders/{order_id}")
+
+    def get_orderbook(self, ticker: str, depth: int = 1) -> dict:
+        """Order book for one market. depth=1 returns top-of-book only,
+        higher values return more levels per side."""
+        return self._request("GET", f"/markets/{ticker}/orderbook",
+                             params={"depth": int(depth)})

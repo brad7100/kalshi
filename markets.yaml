@@ -1,0 +1,42 @@
+# Curated pairs of Kalshi <-> Polymarket US markets for arb scanning.
+#
+# Each pair maps ONE specific Kalshi market ticker to ONE Polymarket US
+# market slug. v1 supports binary markets only: each pair has a YES side
+# and a NO side on both venues, and we scan for arb where buying YES on
+# one venue and NO on the other locks in profit after fees.
+#
+# Fields:
+#   key                 short stable identifier (used in URLs, logs, alerts)
+#   label               human-readable name shown in UI / notifications
+#   kalshi_ticker       exact Kalshi market ticker (NOT event_ticker — the
+#                       specific market, e.g. KXPRESPARTY-28-DEM)
+#   polymarket_us_slug  exact Polymarket US market slug (the URL slug; find
+#                       it via the slug shown on the market's polymarket.us
+#                       page, or query /markets via the SDK)
+#   yes_means           "same" (default) or "inverted". Use "inverted"
+#                       when one venue's YES corresponds to the other's NO
+#                       (e.g. Kalshi "Will rate cut happen?" vs Polymarket
+#                       "Will rate hold?"). When inverted, the scanner
+#                       swaps the Polymarket YES/NO sides before pairing.
+#   enabled             skip a pair without deleting its entry. Default true.
+#
+# Add pairs by appending entries below. The file is reloaded on every
+# scan, so changes take effect without restarting the app.
+
+pairs: []
+
+# Examples — uncomment and edit with real tickers/slugs you've verified:
+#
+# - key: pres-2028-dem-nom
+#   label: 2028 Dem Nominee — Newsom
+#   kalshi_ticker: KXPRESPARTY-28-DEM
+#   polymarket_us_slug: will-gavin-newsom-be-the-2028-dem-nominee
+#   yes_means: same
+#   enabled: true
+#
+# - key: fed-rate-cut-2026q3
+#   label: Fed cut by Sep 2026 FOMC
+#   kalshi_ticker: KXFEDDECISION-26SEP-C25
+#   polymarket_us_slug: will-the-fed-cut-rates-at-september-2026-meeting
+#   yes_means: same
+#   enabled: true
