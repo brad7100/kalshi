@@ -133,28 +133,42 @@ def fetch_kalshi_market(ticker: str) -> dict:
     return payload.get("market") or {}
 
 
-def fetch_kalshi_markets_for_event(event_ticker: str) -> dict[str, dict]:
+def fetch_kalshi_markets_for_event(event_ticker: str,
+                                   retries: int = 3,
+                                   backoff_sec: float = 1.0) -> dict[str, dict]:
     """Batch fetch: one HTTP call returns every market in an event.
 
-    Returns `{ticker: market_dict}`. Used by the scanner to read all
-    pairs in a series (KXMLB-26-*, KXNHL-26-*, ...) in a single round-
-    trip instead of N requests — keeps us well under Kalshi's per-IP
-    rate limit when the registry has many pairs.
+    Returns `{ticker: market_dict}`. Retries on HTTP 429 with exponential
+    backoff (1s, 2s, 4s by default) since Kalshi rate-limits
+    unauthenticated public reads aggressively.
     """
     import urllib.parse
     url = (f"{KALSHI_BASE}/markets?"
            + urllib.parse.urlencode({"event_ticker": event_ticker, "limit": 200}))
-    req = urllib.request.Request(
-        url, headers={"Accept": "application/json", "User-Agent": _BROWSER_UA}
-    )
-    with urllib.request.urlopen(req, timeout=15) as r:
-        payload = json.loads(r.read())
-    out: dict[str, dict] = {}
-    for m in payload.get("markets", []) or []:
-        t = m.get("ticker")
-        if t:
-            out[t] = m
-    return out
+    last_err: Exception | None = None
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(
+            url, headers={"Accept": "application/json", "User-Agent": _BROWSER_UA}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                payload = json.loads(r.read())
+            out: dict[str, dict] = {}
+            for m in payload.get("markets", []) or []:
+                t = m.get("ticker")
+                if t:
+                    out[t] = m
+            return out
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code == 429 and attempt < retries:
+                import time as _t
+                _t.sleep(backoff_sec * (2 ** attempt))
+                continue
+            raise
+    if last_err:
+        raise last_err
+    return {}
 
 
 def _kalshi_event_ticker_for(market_ticker: str) -> str:
@@ -163,6 +177,51 @@ def _kalshi_event_ticker_for(market_ticker: str) -> str:
     if "-" not in market_ticker:
         return market_ticker
     return market_ticker.rsplit("-", 1)[0]
+
+
+# Module-level cache + throttle for Kalshi reads. ALL run_scan callers
+# share this — /api/scan, the ntfy background loop, and /api/arb/recommend
+# don't stampede when called within the TTL.
+_KALSHI_CACHE_TTL_SEC = float(os.getenv("KALSHI_EVENT_CACHE_TTL_SEC", "15"))
+_KALSHI_INTER_CALL_DELAY_SEC = float(os.getenv("KALSHI_INTER_CALL_DELAY_SEC", "0.25"))
+_kalshi_event_cache: dict[str, tuple[float, dict[str, dict]]] = {}
+import threading as _threading
+_kalshi_cache_lock = _threading.Lock()
+
+
+def _fetch_kalshi_events_cached(event_tickers: list[str],
+                                errors: list[str]) -> dict[str, dict]:
+    """Fetch a batch of event_tickers. Per-event responses are cached for
+    _KALSHI_CACHE_TTL_SEC and a small delay is inserted between fresh
+    fetches to stay under Kalshi's rate limit.
+    """
+    import time as _t
+    now = _t.time()
+    out: dict[str, dict] = {}
+    to_fetch: list[str] = []
+    with _kalshi_cache_lock:
+        for ev in event_tickers:
+            entry = _kalshi_event_cache.get(ev)
+            if entry and now - entry[0] < _KALSHI_CACHE_TTL_SEC:
+                out.update(entry[1])
+            else:
+                to_fetch.append(ev)
+
+    for i, ev in enumerate(to_fetch):
+        try:
+            ms = fetch_kalshi_markets_for_event(ev)
+            with _kalshi_cache_lock:
+                _kalshi_event_cache[ev] = (_t.time(), ms)
+            out.update(ms)
+        except Exception as e:
+            errors.append(f"kalshi event {ev}: {e}")
+            # Cache the failure briefly so we don't hammer the failing event
+            # for the next caller — but with a short TTL so it recovers fast.
+            with _kalshi_cache_lock:
+                _kalshi_event_cache[ev] = (_t.time(), {})
+        if i < len(to_fetch) - 1 and _KALSHI_INTER_CALL_DELAY_SEC > 0:
+            _t.sleep(_KALSHI_INTER_CALL_DELAY_SEC)
+    return out
 
 
 def _f(v, default: float | None = None) -> float | None:
@@ -324,14 +383,9 @@ def run_scan(contracts: int = 100, min_spread_cents: float = 0.0,
             continue
         by_event.setdefault(_kalshi_event_ticker_for(cfg.kalshi_ticker), []).append(cfg)
 
-    kalshi_market_by_ticker: dict[str, dict] = {}
-    for event_ticker, _cfgs in by_event.items():
-        try:
-            ms = fetch_kalshi_markets_for_event(event_ticker)
-            kalshi_market_by_ticker.update(ms)
-        except Exception as e:
-            # Per-event error, doesn't kill the rest.
-            errors.append(f"kalshi event {event_ticker}: {e}")
+    kalshi_market_by_ticker: dict[str, dict] = _fetch_kalshi_events_cached(
+        list(by_event.keys()), errors,
+    )
 
     for cfg in pairs:
         if not cfg.enabled:
