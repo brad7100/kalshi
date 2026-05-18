@@ -79,7 +79,9 @@ class ArbResult:
     kalshi_leg: LegResult | None = None
     poly_leg: LegResult | None = None
     hedge_leg: LegResult | None = None
-    status: str = "pending"   # "success", "partial_success", "hedged", "failed", "dry_run"
+    unwind_leg: LegResult | None = None
+    naked_exposure: dict | None = None  # populated if user is STILL unhedged after unwind attempt
+    status: str = "pending"   # success, partial_success, hedged, unwound, naked, failed, dry_run
     notes: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -93,6 +95,8 @@ class ArbResult:
             "kalshi_leg": self.kalshi_leg.as_dict() if self.kalshi_leg else None,
             "poly_leg":   self.poly_leg.as_dict()   if self.poly_leg   else None,
             "hedge_leg":  self.hedge_leg.as_dict()  if self.hedge_leg  else None,
+            "unwind_leg": self.unwind_leg.as_dict() if self.unwind_leg else None,
+            "naked_exposure": self.naked_exposure,
             "status": self.status,
             "notes": self.notes,
         }
@@ -102,12 +106,13 @@ class ArbResult:
 
 def _place_kalshi(kc: KalshiClient, leg: dict, contracts: int,
                   tif: str = "immediate_or_cancel",
+                  action: str = "buy",
                   dry_run: bool = True) -> LegResult:
     res = LegResult(
         venue="kalshi",
         market_id=leg["market_id"],
         side=leg["side"],
-        action="buy",
+        action=action,
         requested_qty=contracts,
     )
     limit_cents = max(1, min(99, int(round(leg["price"] * 100))))
@@ -116,10 +121,10 @@ def _place_kalshi(kc: KalshiClient, leg: dict, contracts: int,
         res.filled_qty = float(contracts)
         res.avg_fill_price = limit_cents / 100.0
         log.info(
-            "[DRY_RUN] kalshi: would place BUY %s %s@%dc tif=%s",
-            leg["side"], contracts, limit_cents, tif
+            "[DRY_RUN] kalshi: would place %s %s %s@%dc tif=%s",
+            action.upper(), leg["side"], contracts, limit_cents, tif
         )
-        res.raw = {"dry_run": True, "limit_cents": limit_cents, "tif": tif}
+        res.raw = {"dry_run": True, "limit_cents": limit_cents, "tif": tif, "action": action}
         return res
     if not kc.configured:
         res.status = "rejected"
@@ -130,7 +135,7 @@ def _place_kalshi(kc: KalshiClient, leg: dict, contracts: int,
         resp = kc.place_order(
             ticker=leg["market_id"],
             side=leg["side"],
-            action="buy",
+            action=action,
             count=contracts,
             limit_price_cents=limit_cents,
             client_order_id=client_order_id,
@@ -163,12 +168,13 @@ def _place_kalshi(kc: KalshiClient, leg: dict, contracts: int,
 
 def _place_poly(pc: PolymarketUSClient, leg: dict, contracts: int,
                 tif: str = "IOC",
+                action: str = "buy",
                 dry_run: bool = True) -> LegResult:
     res = LegResult(
         venue="polymarket_us",
         market_id=leg["market_id"],
         side=leg["side"],
-        action="buy",
+        action=action,
         requested_qty=contracts,
     )
     if dry_run:
@@ -176,10 +182,10 @@ def _place_poly(pc: PolymarketUSClient, leg: dict, contracts: int,
         res.filled_qty = float(contracts)
         res.avg_fill_price = float(leg["price"])
         log.info(
-            "[DRY_RUN] polymarket: would place: BUY %s %s shares @ %.4f tif=%s",
-            leg["side"], contracts, leg["price"], tif
+            "[DRY_RUN] polymarket: would place %s %s %s shares @ %.4f tif=%s",
+            action.upper(), leg["side"], contracts, leg["price"], tif
         )
-        res.raw = {"dry_run": True, "limit_price": leg["price"], "tif": tif}
+        res.raw = {"dry_run": True, "limit_price": leg["price"], "tif": tif, "action": action}
         return res
     if not pc.configured:
         res.status = "rejected"
@@ -189,7 +195,7 @@ def _place_poly(pc: PolymarketUSClient, leg: dict, contracts: int,
         resp = pc.place_order(
             slug=leg["market_id"],
             side=leg["side"],
-            action="buy",
+            action=action,
             quantity=float(contracts),
             limit_price=float(leg["price"]),
             tif=tif,
@@ -281,6 +287,55 @@ def _hedge_imbalance(kc: KalshiClient, pc: PolymarketUSClient,
     return _place_poly(pc, hedge_leg, int(short_poly), dry_run=dry_run)
 
 
+def _unwind_overfilled_leg(kc: KalshiClient, pc: PolymarketUSClient,
+                           opp: dict, k_res: LegResult, p_res: LegResult,
+                           dry_run: bool) -> LegResult | None:
+    """LAST-RESORT fallback when the hedge attempt also fails: sell back
+    the over-filled leg to flat instead of leaving the user with a naked
+    directional position.
+
+    This eats whatever bid-ask spread + fees the over-filled venue has,
+    but it's strictly better than carrying open directional risk because
+    the other side won't trade.
+
+    Returns the unwind LegResult, or None if no unwind was needed.
+    """
+    matched = min(k_res.filled_qty, p_res.filled_qty)
+    over_kalshi = k_res.filled_qty - matched
+    over_poly   = p_res.filled_qty - matched
+    if over_kalshi == 0 and over_poly == 0:
+        return None
+
+    if over_kalshi > 0:
+        # We have extra Kalshi contracts. Sell them at the bid (or 2c
+        # below the original ask as a fallback if bid is missing) with
+        # IOC so we don't leave an order resting.
+        target = opp["kalshi_leg"]
+        bid = target.get("bid")
+        if not bid or bid <= 0:
+            bid = max(0.02, target["price"] - 0.02)
+        sell_leg = {**target, "price": bid}
+        log.warning(
+            "Hedge failed — unwinding %s extra Kalshi %s contracts at %.2fc bid",
+            int(over_kalshi), target["side"], bid * 100
+        )
+        return _place_kalshi(kc, sell_leg, int(over_kalshi),
+                             action="sell", dry_run=dry_run)
+
+    # over_poly > 0
+    target = opp["poly_leg"]
+    bid = target.get("bid")
+    if not bid or bid <= 0:
+        bid = max(0.02, target["price"] - 0.02)
+    sell_leg = {**target, "price": bid}
+    log.warning(
+        "Hedge failed — unwinding %s extra Polymarket %s shares at %.4f bid",
+        int(over_poly), target["side"], bid
+    )
+    return _place_poly(pc, sell_leg, int(over_poly),
+                       action="sell", dry_run=dry_run)
+
+
 # ---- public entry --------------------------------------------------------
 
 def execute_arb(opp: dict, contracts: int, *,
@@ -308,15 +363,28 @@ def execute_arb(opp: dict, contracts: int, *,
     result.kalshi_leg = k_res
     result.poly_leg = p_res
 
-    # Hedge any imbalance.
+    # Step 1: try to hedge any imbalance by buying more of the
+    # under-filled side at a slightly worse price.
     hedge = _hedge_imbalance(kc, pc, opp, k_res, p_res, dry_run)
     if hedge is not None:
         result.hedge_leg = hedge
-        # After hedging, recompute filled-on-each-side:
         if hedge.venue == "kalshi":
             k_res.filled_qty += hedge.filled_qty
         else:
             p_res.filled_qty += hedge.filled_qty
+
+    # Step 2 (NEW): if the hedge failed to fully close the imbalance,
+    # the user now has unhedged directional exposure on the over-filled
+    # venue. Sell that excess back to flat — eats the bid-ask spread but
+    # strictly better than carrying naked risk.
+    unwind = _unwind_overfilled_leg(kc, pc, opp, k_res, p_res, dry_run)
+    if unwind is not None:
+        result.unwind_leg = unwind
+        # The unwind REDUCES filled_qty on its venue:
+        if unwind.venue == "kalshi":
+            k_res.filled_qty -= unwind.filled_qty
+        else:
+            p_res.filled_qty -= unwind.filled_qty
 
     matched = min(k_res.filled_qty, p_res.filled_qty)
     result.matched_contracts = matched
@@ -343,12 +411,45 @@ def execute_arb(opp: dict, contracts: int, *,
         result.locked_spread_per_contract = 1.0 - actual_cost_per_contract
         result.realized_pl = result.locked_spread_per_contract * matched
 
+    # Final naked-exposure check: are the two sides still imbalanced after
+    # hedge + unwind? If so, the user has open directional risk and must
+    # intervene manually.
+    final_imbalance = abs(k_res.filled_qty - p_res.filled_qty)
+    if final_imbalance > 0 and not dry_run:
+        over = "kalshi" if k_res.filled_qty > p_res.filled_qty else "polymarket_us"
+        result.naked_exposure = {
+            "venue": over,
+            "shares": float(final_imbalance),
+            "side": (k_res.side if over == "kalshi" else p_res.side),
+            "market_id": (k_res.market_id if over == "kalshi" else p_res.market_id),
+            "instruction": (
+                f"Manually close: SELL {int(final_imbalance)} {('YES' if (k_res.side if over=='kalshi' else p_res.side)=='yes' else 'NO')} "
+                f"on {over} for market {k_res.market_id if over=='kalshi' else p_res.market_id}, "
+                f"OR buy the opposite leg on the other venue to complete the arb."
+            ),
+        }
+
     if dry_run:
         result.status = "dry_run"
+    elif final_imbalance > 0:
+        result.status = "naked"
+        result.notes.append(
+            f"!!! UNHEDGED EXPOSURE: {int(final_imbalance)} extra "
+            f"{result.naked_exposure['venue']} {result.naked_exposure['side']} "
+            f"contracts. Both hedge and unwind attempts failed. "
+            f"Close manually NOW."
+        )
+    elif unwind is not None and unwind.filled_qty > 0:
+        result.status = "unwound"
+        result.notes.append(
+            f"Hedge failed; unwound {int(unwind.filled_qty)} excess "
+            f"{unwind.venue} contracts at the bid (ate the bid-ask spread). "
+            f"No naked exposure remains."
+        )
     elif matched == 0:
         result.status = "failed"
         result.notes.append("Neither leg filled.")
-    elif hedge is not None:
+    elif hedge is not None and hedge.filled_qty > 0:
         result.status = "hedged"
         result.notes.append(
             f"Imbalance hedged with {int(hedge.filled_qty)} extra "
