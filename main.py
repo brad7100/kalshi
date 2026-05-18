@@ -378,7 +378,13 @@ def _summarize_poly_balance(resp: dict) -> dict:
 @app.get("/api/positions")
 def api_positions(_: str = Depends(require_auth)):
     """Per-pair view: for each registered pair, fetch holdings on both
-    venues and report the combined position."""
+    venues and report the combined position.
+
+    Every section is wrapped so a failure on one side (or in our parsing)
+    never 500s the endpoint — it surfaces in `errors[]` instead, so the
+    UI can render partial data.
+    """
+    import traceback
     kalshi_balance: dict = {}
     kalshi_positions: dict = {}
     poly_balances: dict = {}
@@ -387,61 +393,87 @@ def api_positions(_: str = Depends(require_auth)):
 
     if kalshi.configured:
         try:
-            kalshi_balance = kalshi.get_balance()
-            kalshi_positions = kalshi.get_positions(limit=200)
-        except (KalshiError, KalshiNotConfigured) as e:
-            errors.append(f"kalshi: {e}")
+            kalshi_balance = kalshi.get_balance() or {}
+        except Exception as e:
+            log.exception("kalshi.get_balance failed")
+            errors.append(f"kalshi balance: {type(e).__name__}: {e}")
+        try:
+            kalshi_positions = kalshi.get_positions(limit=200) or {}
+        except Exception as e:
+            log.exception("kalshi.get_positions failed")
+            errors.append(f"kalshi positions: {type(e).__name__}: {e}")
 
     if poly.configured:
         try:
-            poly_balances = poly.get_balance()
-        except (PolymarketUSError, PolymarketUSNotConfigured) as e:
-            errors.append(f"polymarket balance: {e}")
+            poly_balances = poly.get_balance() or {}
+        except Exception as e:
+            log.exception("poly.get_balance failed")
+            errors.append(f"polymarket balance: {type(e).__name__}: {e}")
         try:
-            poly_positions = poly.get_positions()
-        except (PolymarketUSError, PolymarketUSNotConfigured) as e:
-            errors.append(f"polymarket positions: {e}")
+            poly_positions = poly.get_positions() or {}
+        except Exception as e:
+            log.exception("poly.get_positions failed")
+            errors.append(f"polymarket positions: {type(e).__name__}: {e}")
 
-    pairs = scanner.load_registry()
     rows = []
+    try:
+        pairs = scanner.load_registry()
+    except Exception as e:
+        log.exception("load_registry failed")
+        errors.append(f"registry: {type(e).__name__}: {e}")
+        pairs = []
+
     for cfg in pairs:
-        kpos = _kalshi_position_for_ticker(kalshi_positions, cfg.kalshi_ticker)
-        ppos = _poly_position_for_slug(poly_positions, cfg.polymarket_us_slug)
-        kshares = _f(kpos.get("position_fp") or kpos.get("position"))
-        kside = "yes" if kshares > 0 else ("no" if kshares < 0 else None)
-        # Polymarket UserPosition: netPosition is a signed-quantity string;
-        # outcome (yes/no) lives on marketMetadata.
-        pshares = _f(ppos.get("netPosition"))
-        pmd = ppos.get("marketMetadata") or {}
-        pside = (pmd.get("outcome") or "").lower() or None
-        rows.append({
-            "key": cfg.key,
-            "label": cfg.label,
-            "kalshi_ticker": cfg.kalshi_ticker,
-            "polymarket_us_slug": cfg.polymarket_us_slug,
-            "enabled": cfg.enabled,
-            "kalshi": {
-                "shares": kshares,
-                "side": kside,
-                "exposure_dollars": _f(kpos.get("market_exposure_dollars")),
-                "realized_pnl_dollars": _f(kpos.get("realized_pnl_dollars")),
-                "fees_paid_dollars": _f(kpos.get("fees_paid_dollars")),
-                "raw": kpos or None,
-            },
-            "polymarket": {
-                "shares": pshares,
-                "side": pside,
-                "cost_basis": _amount_value(ppos.get("cost")),
-                "realized_pnl": _amount_value(ppos.get("realized")),
-                "cash_value": _amount_value(ppos.get("cashValue")),
-                "raw": ppos or None,
-            },
-        })
+        try:
+            kpos = _kalshi_position_for_ticker(kalshi_positions, cfg.kalshi_ticker)
+            ppos = _poly_position_for_slug(poly_positions, cfg.polymarket_us_slug)
+            kshares = _f(kpos.get("position_fp") or kpos.get("position"))
+            kside = "yes" if kshares > 0 else ("no" if kshares < 0 else None)
+            pshares = _f(ppos.get("netPosition"))
+            pmd = ppos.get("marketMetadata") or {}
+            pside = (pmd.get("outcome") or "").lower() or None
+            rows.append({
+                "key": cfg.key,
+                "label": cfg.label,
+                "kalshi_ticker": cfg.kalshi_ticker,
+                "polymarket_us_slug": cfg.polymarket_us_slug,
+                "enabled": cfg.enabled,
+                "kalshi": {
+                    "shares": kshares,
+                    "side": kside,
+                    "exposure_dollars": _f(kpos.get("market_exposure_dollars")),
+                    "realized_pnl_dollars": _f(kpos.get("realized_pnl_dollars")),
+                    "fees_paid_dollars": _f(kpos.get("fees_paid_dollars")),
+                },
+                "polymarket": {
+                    "shares": pshares,
+                    "side": pside,
+                    "cost_basis": _amount_value(ppos.get("cost")),
+                    "realized_pnl": _amount_value(ppos.get("realized")),
+                    "cash_value": _amount_value(ppos.get("cashValue")),
+                },
+            })
+        except Exception as e:
+            log.exception("pair %s row build failed", cfg.key)
+            errors.append(f"pair {cfg.key}: {type(e).__name__}: {e}")
 
     # Kalshi balance: returned in cents.
-    cash_k = (kalshi_balance.get("balance") or 0) / 100.0
-    pv_k = (kalshi_balance.get("portfolio_value") or 0) / 100.0
-    poly_summary = _summarize_poly_balance(poly_balances)
+    try:
+        cash_k = (kalshi_balance.get("balance") or 0) / 100.0
+        pv_k = (kalshi_balance.get("portfolio_value") or 0) / 100.0
+    except Exception as e:
+        errors.append(f"kalshi balance parse: {type(e).__name__}: {e}")
+        cash_k = 0.0; pv_k = 0.0
+
+    try:
+        poly_summary = _summarize_poly_balance(poly_balances)
+    except Exception as e:
+        log.exception("poly balance summary failed")
+        errors.append(f"polymarket balance parse: {type(e).__name__}: {e}")
+        poly_summary = {"cash_dollars": 0.0, "portfolio_value_dollars": 0.0,
+                        "buying_power_dollars": 0.0, "total_dollars": 0.0,
+                        "raw": poly_balances}
+
     return {
         "kalshi_connected": kalshi.configured,
         "polymarket_us_connected": poly.configured,
@@ -451,6 +483,38 @@ def api_positions(_: str = Depends(require_auth)):
         "pairs": rows,
         "errors": errors,
     }
+
+
+@app.get("/api/debug/poly")
+def api_debug_poly(_: str = Depends(require_auth)):
+    """Diagnostic: dump raw Polymarket SDK responses + types so we can see
+    what shape the server is actually getting back. Strip nothing — show
+    the truth."""
+    import traceback
+    out: dict = {
+        "configured": poly.configured,
+        "has_sdk": True,
+    }
+    if not poly.configured:
+        out["note"] = "POLYMARKET_US_KEY_ID / POLYMARKET_US_SECRET_KEY env vars not set"
+        return out
+    for name, fn in [
+        ("balances", lambda: poly.get_balance()),
+        ("positions", lambda: poly.get_positions()),
+    ]:
+        try:
+            r = fn()
+            out[name] = {
+                "type": type(r).__name__,
+                "value": r,
+            }
+        except Exception as e:
+            out[name] = {
+                "error_type": type(e).__name__,
+                "error_msg": str(e),
+                "traceback": traceback.format_exc(),
+            }
+    return out
 
 
 # ---- /api/arb/recommend ---------------------------------------------------
