@@ -118,7 +118,12 @@ def polymarket_us_taker_fee_per_contract(price: float, contracts: int = 1) -> fl
 # ---- Kalshi public market data --------------------------------------------
 
 def fetch_kalshi_market(ticker: str) -> dict:
-    """Return the raw market dict for one Kalshi ticker."""
+    """Return the raw market dict for one Kalshi ticker (single-ticker GET).
+
+    Prefer fetch_kalshi_markets_for_event() when scanning many tickers
+    from the same event — it batches in one HTTP call and avoids rate
+    limits.
+    """
     url = f"{KALSHI_BASE}/markets/{ticker}"
     req = urllib.request.Request(
         url, headers={"Accept": "application/json", "User-Agent": _BROWSER_UA}
@@ -126,6 +131,38 @@ def fetch_kalshi_market(ticker: str) -> dict:
     with urllib.request.urlopen(req, timeout=10) as r:
         payload = json.loads(r.read())
     return payload.get("market") or {}
+
+
+def fetch_kalshi_markets_for_event(event_ticker: str) -> dict[str, dict]:
+    """Batch fetch: one HTTP call returns every market in an event.
+
+    Returns `{ticker: market_dict}`. Used by the scanner to read all
+    pairs in a series (KXMLB-26-*, KXNHL-26-*, ...) in a single round-
+    trip instead of N requests — keeps us well under Kalshi's per-IP
+    rate limit when the registry has many pairs.
+    """
+    import urllib.parse
+    url = (f"{KALSHI_BASE}/markets?"
+           + urllib.parse.urlencode({"event_ticker": event_ticker, "limit": 200}))
+    req = urllib.request.Request(
+        url, headers={"Accept": "application/json", "User-Agent": _BROWSER_UA}
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        payload = json.loads(r.read())
+    out: dict[str, dict] = {}
+    for m in payload.get("markets", []) or []:
+        t = m.get("ticker")
+        if t:
+            out[t] = m
+    return out
+
+
+def _kalshi_event_ticker_for(market_ticker: str) -> str:
+    """Heuristic: Kalshi event tickers are the market ticker minus its
+    final '-{outcome}' segment. KXMLB-26-DET -> KXMLB-26."""
+    if "-" not in market_ticker:
+        return market_ticker
+    return market_ticker.rsplit("-", 1)[0]
 
 
 def _f(v, default: float | None = None) -> float | None:
@@ -279,15 +316,36 @@ def run_scan(contracts: int = 100, min_spread_cents: float = 0.0,
     pairs_info: list[dict] = []
     errors: list[str] = []
 
+    # --- Batch Kalshi reads: group pairs by event_ticker so we issue ONE
+    #     /markets?event_ticker=X call per event instead of one per pair.
+    by_event: dict[str, list] = {}
+    for cfg in pairs:
+        if not cfg.enabled:
+            continue
+        by_event.setdefault(_kalshi_event_ticker_for(cfg.kalshi_ticker), []).append(cfg)
+
+    kalshi_market_by_ticker: dict[str, dict] = {}
+    for event_ticker, _cfgs in by_event.items():
+        try:
+            ms = fetch_kalshi_markets_for_event(event_ticker)
+            kalshi_market_by_ticker.update(ms)
+        except Exception as e:
+            # Per-event error, doesn't kill the rest.
+            errors.append(f"kalshi event {event_ticker}: {e}")
+
     for cfg in pairs:
         if not cfg.enabled:
             continue
         kalshi_q: dict = {}
         poly_q: dict = {}
-        try:
-            kalshi_q = parse_kalshi_quote(fetch_kalshi_market(cfg.kalshi_ticker))
-        except Exception as e:
-            errors.append(f"kalshi {cfg.key} ({cfg.kalshi_ticker}): {e}")
+        km = kalshi_market_by_ticker.get(cfg.kalshi_ticker)
+        if km:
+            kalshi_q = parse_kalshi_quote(km)
+        elif not any(e.startswith(f"kalshi event {_kalshi_event_ticker_for(cfg.kalshi_ticker)}:")
+                     for e in errors):
+            # Event call succeeded but this ticker wasn't in the response
+            # (settled / not yet open). Note it once.
+            errors.append(f"kalshi {cfg.key} ({cfg.kalshi_ticker}): not in event response")
         try:
             poly_raw = poly.get_quote(cfg.polymarket_us_slug)
             poly_q = parse_poly_quote(poly_raw, inverted=(cfg.yes_means == "inverted"))
