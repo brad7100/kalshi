@@ -475,15 +475,27 @@ async function doExecute() {
       success: 'text-emerald-300',
       partial_success: 'text-amber-300',
       hedged: 'text-amber-300',
+      unwound: 'text-amber-300',
+      naked: 'text-red-300',
       failed: 'text-red-300',
       dry_run: 'text-blue-300',
     })[r.status] || 'text-gray-300';
+    const nakedBanner = r.naked_exposure ? `
+      <div class="bg-red-700 border-2 border-red-400 rounded p-2 mt-2 animate-pulse">
+        <div class="text-white font-bold text-sm">⚠ UNHEDGED EXPOSURE</div>
+        <div class="text-red-100 text-xs mt-1 num">
+          ${r.naked_exposure.shares.toFixed(0)} ${r.naked_exposure.side.toUpperCase()} on ${r.naked_exposure.venue}
+          (${r.naked_exposure.market_id})
+        </div>
+        <div class="text-red-100 text-[11px] mt-1">${r.naked_exposure.instruction}</div>
+      </div>` : '';
     resEl.innerHTML = `
       <div class="bg-gray-900 rounded p-3 text-xs space-y-1">
         <div class="font-bold ${statusColor}">${r.status.toUpperCase()}${data.dry_run ? ' (DRY-RUN)' : ''}</div>
         <div class="num">matched ${r.matched_contracts.toFixed(0)} / ${r.requested_contracts}</div>
         ${r.locked_spread_per_contract != null ? `<div class="num">locked ${(r.locked_spread_per_contract * 100).toFixed(2)}¢/contract · realized ${fmtUsd(r.realized_pl)}</div>` : ''}
-        ${(r.notes && r.notes.length) ? r.notes.map(n => `<div class="text-gray-400">• ${n}</div>`).join('') : ''}
+        ${(r.notes && r.notes.length) ? r.notes.map(n => `<div class="${r.status === 'naked' ? 'text-red-300 font-bold' : 'text-gray-400'}">• ${n}</div>`).join('') : ''}
+        ${nakedBanner}
         <details class="mt-2 text-[10px] text-gray-500">
           <summary class="cursor-pointer">Legs</summary>
           <pre class="whitespace-pre-wrap mt-1">${JSON.stringify(r, null, 2)}</pre>
