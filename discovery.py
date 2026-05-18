@@ -223,19 +223,68 @@ def pull_poly_markets(client: PolymarketUSClient | None = None,
     return markets
 
 
-# ---- pre-filter via TF-IDF -----------------------------------------------
+# ---- pre-filter via TF-IDF + bigrams + heuristics ------------------------
 
 _TOK_RE = re.compile(r"[A-Za-z0-9]+")
+_YEAR_RE = re.compile(r"\b(20[2-3][0-9])\b")
+
+# Cheap category bucketing: map a free-form category string to a coarse
+# bucket so we only consider Poly sports vs Kalshi sports, etc. Within
+# a bucket we still let TF-IDF do the work. Markets without a recognized
+# bucket fall to "other" and only match against other "other"s.
+_CATEGORY_BUCKETS = {
+    # Polymarket categories (lowercase)
+    "sports": "sports", "politics": "politics", "election": "politics",
+    "crypto": "crypto", "economics": "economics", "macro": "economics",
+    "entertainment": "entertainment", "climate": "climate",
+    "weather": "climate", "tech": "tech", "science": "tech",
+    # Kalshi categories
+    "Elections": "politics", "Politics": "politics", "Sports": "sports",
+    "Economics": "economics", "Financials": "economics", "Crypto": "crypto",
+    "Entertainment": "entertainment", "Climate and Weather": "climate",
+    "Science and Technology": "tech", "Companies": "companies",
+    "World": "world", "Social": "social", "Health": "health",
+    "Commodities": "economics", "Mentions": "social",
+    "Transportation": "other",
+}
+
+
+def _bucket(market: MarketEntry) -> str:
+    cat = (market.raw or {}).get("category") or ""
+    return _CATEGORY_BUCKETS.get(cat) or _CATEGORY_BUCKETS.get(cat.lower(), "other")
 
 
 def _tokenize(s: str) -> list[str]:
     return [t.lower() for t in _TOK_RE.findall(s)]
 
 
+def _bigrams(tokens: list[str]) -> list[str]:
+    return [f"{a}_{b}" for a, b in zip(tokens, tokens[1:])]
+
+
+def _features(market: MarketEntry) -> list[str]:
+    """Unigrams + bigrams from title+rules. Bigrams capture phrases like
+    'pro_basketball', 'stanley_cup', 'world_series' that don't survive
+    unigram bag-of-words."""
+    toks = _tokenize(market.text_for_matching())
+    filt = [t for t in toks if t not in _STOP]
+    return filt + _bigrams(filt)
+
+
+def _years(market: MarketEntry) -> set[str]:
+    """Year tokens in title + end_date — used for date-overlap bonus."""
+    found = set(_YEAR_RE.findall(market.title))
+    if market.end_date and len(market.end_date) >= 4:
+        # Common shapes: "2026-05-18T..." or "2026-05-18"
+        if market.end_date[:4].isdigit():
+            found.add(market.end_date[:4])
+    return found
+
+
 _STOP = {
     "the", "a", "an", "will", "be", "of", "to", "in", "on", "by", "and", "or",
     "for", "at", "with", "is", "are", "this", "that", "next", "before", "after",
-    "win", "winner", "wins", "yes", "no",
+    "win", "winner", "wins", "yes", "no", "market", "markets",
 }
 
 
@@ -250,8 +299,7 @@ def _build_idf(docs: list[list[str]]) -> dict[str, float]:
 
 def _tfidf_vec(tokens: list[str], idf: dict[str, float]) -> dict[str, float]:
     tf = Counter(tokens)
-    vec = {t: (count / len(tokens)) * idf.get(t, 0.0) for t, count in tf.items() if t not in _STOP}
-    # Normalize
+    vec = {t: (count / len(tokens)) * idf.get(t, 0.0) for t, count in tf.items()}
     norm = math.sqrt(sum(v * v for v in vec.values())) or 1.0
     return {t: v / norm for t, v in vec.items()}
 
@@ -262,28 +310,56 @@ def _cos(a: dict[str, float], b: dict[str, float]) -> float:
     return sum(v * b.get(t, 0.0) for t, v in a.items())
 
 
+def _date_bonus(p_years: set[str], k_years: set[str]) -> float:
+    """+0.10 if any year matches; +0.20 if exact same year and not far in
+    the future (small priors that a same-year market is more likely to
+    refer to the same event)."""
+    common = p_years & k_years
+    if not common:
+        return 0.0
+    return 0.15
+
+
 def prefilter_candidates(
     poly_markets: list[MarketEntry],
     kalshi_markets: list[MarketEntry],
     top_k: int = TOP_K,
+    min_score: float = 0.15,
 ) -> list[Candidate]:
     """For each Polymarket market, find the top-K most similar Kalshi
-    markets by TF-IDF cosine on title+rules text. Returns a flat list
-    of Candidate (each Poly market generates up to top_k entries)."""
-    poly_docs = [_tokenize(m.text_for_matching()) for m in poly_markets]
-    kalshi_docs = [_tokenize(m.text_for_matching()) for m in kalshi_markets]
-    idf = _build_idf(poly_docs + kalshi_docs)
-    poly_vecs = [_tfidf_vec(d, idf) for d in poly_docs]
-    kalshi_vecs = [_tfidf_vec(d, idf) for d in kalshi_docs]
+    markets via TF-IDF cosine on unigrams+bigrams, with a category-bucket
+    constraint and a date-overlap bonus.
+
+    Returns a flat list of Candidate.
+    """
+    # Index Kalshi by bucket so we only score within-bucket candidates.
+    by_bucket: dict[str, list[int]] = {}
+    for ki, km in enumerate(kalshi_markets):
+        by_bucket.setdefault(_bucket(km), []).append(ki)
+
+    poly_feats = [_features(m) for m in poly_markets]
+    kalshi_feats = [_features(m) for m in kalshi_markets]
+    idf = _build_idf(poly_feats + kalshi_feats)
+    poly_vecs = [_tfidf_vec(d, idf) for d in poly_feats]
+    kalshi_vecs = [_tfidf_vec(d, idf) for d in kalshi_feats]
+
+    poly_years = [_years(m) for m in poly_markets]
+    kalshi_years = [_years(m) for m in kalshi_markets]
 
     out: list[Candidate] = []
     for pi, pvec in enumerate(poly_vecs):
         if not pvec:
             continue
+        bucket = _bucket(poly_markets[pi])
+        # Allow same-bucket + 'other' (some markets are mis-categorized).
+        candidate_ki = by_bucket.get(bucket, []) + by_bucket.get("other", [])
         scores: list[tuple[float, int]] = []
-        for ki, kvec in enumerate(kalshi_vecs):
-            s = _cos(pvec, kvec)
-            if s > 0.05:
+        for ki in candidate_ki:
+            s = _cos(pvec, kalshi_vecs[ki])
+            if s <= 0:
+                continue
+            s += _date_bonus(poly_years[pi], kalshi_years[ki])
+            if s >= min_score:
                 scores.append((s, ki))
         scores.sort(reverse=True)
         for s, ki in scores[:top_k]:

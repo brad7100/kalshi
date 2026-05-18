@@ -79,6 +79,17 @@ NTFY_ARB_SPREAD_C = float(os.getenv("NTFY_ARB_SPREAD_C", "1.0"))
 NTFY_COOLDOWN_SEC = int(os.getenv("NTFY_COOLDOWN_SEC", "300"))
 NTFY_INTERVAL_SEC = int(os.getenv("NTFY_INTERVAL_SEC", "30"))
 
+# Background discovery scheduler. Off by default — set
+# DISCOVERY_INTERVAL_HOURS=6 to refresh candidates every 6 hours, and
+# DISCOVERY_AUTO_RUN_ON_START=true to also kick a run on app boot.
+# Each full run hits the Anthropic API and your throttled Kalshi quota;
+# 6h is a reasonable cadence for catching new/expiring markets.
+DISCOVERY_INTERVAL_HOURS = float(os.getenv("DISCOVERY_INTERVAL_HOURS", "0"))
+DISCOVERY_AUTO_RUN_ON_START = (
+    os.getenv("DISCOVERY_AUTO_RUN_ON_START", "false").lower()
+    in ("1", "true", "yes", "on")
+)
+
 if not APP_PASSWORD:
     log.warning("APP_PASSWORD not set — app is OPEN. Do not deploy like this.")
 if DRY_RUN:
@@ -187,18 +198,45 @@ def _ntfy_loop() -> None:
     log.info("ntfy background loop stopped")
 
 
+_discovery_stop = threading.Event()
+
+
+def _discovery_loop() -> None:
+    """Periodic discovery refresh. Sleeps DISCOVERY_INTERVAL_HOURS between
+    runs, kicking off a fresh catalog pull + LLM verify each cycle."""
+    log.info("discovery background loop started (every %.1fh, auto_start=%s)",
+             DISCOVERY_INTERVAL_HOURS, DISCOVERY_AUTO_RUN_ON_START)
+    # First-run delay: if AUTO_RUN_ON_START, kick off after 60s grace.
+    # Otherwise wait the full interval before the first run.
+    first_wait = 60 if DISCOVERY_AUTO_RUN_ON_START else DISCOVERY_INTERVAL_HOURS * 3600
+    if _discovery_stop.wait(first_wait):
+        return
+    while not _discovery_stop.is_set():
+        try:
+            if not _DISCOVERY_STATE["running"]:
+                log.info("discovery scheduler: kicking off run")
+                _discovery_worker(do_llm=True)
+        except Exception:
+            log.exception("discovery scheduler tick failed")
+        # Sleep the interval before the next tick.
+        if _discovery_stop.wait(DISCOVERY_INTERVAL_HOURS * 3600):
+            return
+    log.info("discovery background loop stopped")
+
+
 # ---- app lifecycle --------------------------------------------------------
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
-    thread = None
     if NTFY_TOPIC:
-        thread = threading.Thread(target=_ntfy_loop, daemon=True, name="ntfy")
-        thread.start()
+        threading.Thread(target=_ntfy_loop, daemon=True, name="ntfy").start()
+    if DISCOVERY_INTERVAL_HOURS > 0 or DISCOVERY_AUTO_RUN_ON_START:
+        threading.Thread(target=_discovery_loop, daemon=True, name="discovery-loop").start()
     try:
         yield
     finally:
         _ntfy_stop.set()
+        _discovery_stop.set()
 
 
 app = FastAPI(title="Arb Scanner", version="1.0", lifespan=_lifespan)

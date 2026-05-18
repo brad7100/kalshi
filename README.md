@@ -124,6 +124,8 @@ restarting the server.
 | `ANTHROPIC_API_KEY` | for discovery | Claude API key. Without it, /api/discovery falls back to pre-filter-only (no semantic verification). |
 | `DISCOVERY_TOP_K` | no | Candidates per Polymarket market the LLM verifies. Default 5. |
 | `DISCOVERY_MODEL` | no | Anthropic model ID. Default `claude-haiku-4-5`. |
+| `DISCOVERY_INTERVAL_HOURS` | no | Auto-refresh discovery every N hours. 0 (default) = off. Try 6. |
+| `DISCOVERY_AUTO_RUN_ON_START` | no | `true` to kick a discovery run ~60s after app boot. Default `false`. |
 | `NTFY_TOPIC` | no | ntfy.sh topic for background push notifications. Treat as a secret — anyone with the topic name can read alerts. |
 | `NTFY_SERVER` | no | Override ntfy server. Default `https://ntfy.sh`. |
 | `NTFY_ARB_SPREAD_C` | no | Alert when locked spread ≥ this many cents/contract. Default 1.0. |
