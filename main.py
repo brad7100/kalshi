@@ -317,20 +317,24 @@ if STATIC_DIR.exists():
 # ---- /api/scan ------------------------------------------------------------
 
 @app.get("/api/scan")
-def api_scan(contracts: int = 100, min_spread: float = -5.0,
+def api_scan(contracts: int = 100,
+             min_spread: float = -5.0,
+             min_annualized: float | None = None,
              _: str = Depends(require_auth)):
     """Return all registered pairs with their current arb spread.
 
-    Default min_spread=-5.0c shows near-misses too so the UI has visibility
-    into pairs that aren't currently arb-able. Pass min_spread=0 to filter
-    to positive arbs only.
+    min_spread:     keep rows with locked_spread_cents >= this many ¢ (default -5)
+    min_annualized: if set, additionally keep only rows with annualized_return_pct
+                    >= this value. Rows with unknown end_date pass through.
     """
     now = time.time()
-    cache_key = f"{contracts}:{min_spread}"
+    cache_key = f"{contracts}:{min_spread}:{min_annualized}"
     cached = _SCAN_CACHE.get(cache_key)
     if cached and now - cached["ts"] < 5.0:
         return cached["data"]
-    data = scanner.run_scan(contracts=contracts, min_spread_cents=min_spread)
+    data = scanner.run_scan(contracts=contracts,
+                            min_spread_cents=min_spread,
+                            min_annualized_pct=min_annualized)
     data["fetched_at"] = datetime.utcnow().isoformat() + "Z"
     _SCAN_CACHE[cache_key] = {"ts": now, "data": data}
     return data
