@@ -88,12 +88,49 @@ class PolymarketUSClient:
     # ---- public market data -------------------------------------------------
 
     @_wrap
-    def get_market(self, slug: str) -> dict:
-        """Return one market by slug. Includes top-of-book best bid/ask,
-        last trade, volume, status."""
+    def get_market_meta(self, slug: str) -> dict:
+        """Market metadata (slug, question, dates) — does NOT include live
+        prices. Use get_quote for prices."""
         if not _HAS_SDK:
             raise PolymarketUSError("polymarket-us SDK not installed")
         return self._client.markets.retrieve_by_slug(slug)
+
+    @_wrap
+    def get_quote(self, slug: str) -> dict:
+        """Top-of-book quote: bestBid, bestAsk, last trade, depths.
+
+        Returns a flattened dict so callers don't have to dig through
+        the SDK's `{marketData: {...}}` nesting:
+            {
+              "slug": str, "yes_bid": float|None, "yes_ask": float|None,
+              "bid_depth": int, "ask_depth": int,
+              "last_trade": float|None, "current_px": float|None,
+              "open_interest": float, "shares_traded": float,
+            }
+        """
+        if not _HAS_SDK:
+            raise PolymarketUSError("polymarket-us SDK not installed")
+        raw = self._client.markets.bbo(slug)
+        md = (raw or {}).get("marketData") or {}
+        def _amt(d):
+            if isinstance(d, dict):
+                try:
+                    return float(d.get("value"))
+                except (TypeError, ValueError):
+                    return None
+            return None
+        return {
+            "slug": md.get("marketSlug") or slug,
+            "yes_bid": _amt(md.get("bestBid")),
+            "yes_ask": _amt(md.get("bestAsk")),
+            "bid_depth": md.get("bidDepth"),
+            "ask_depth": md.get("askDepth"),
+            "last_trade": _amt(md.get("lastTradePx")),
+            "current_px": _amt(md.get("currentPx")),
+            "open_interest": _f_local(md.get("openInterest"), 0.0),
+            "shares_traded": _f_local(md.get("sharesTraded"), 0.0),
+            "raw": raw,
+        }
 
     @_wrap
     def get_orderbook(self, slug: str) -> dict:
@@ -102,12 +139,12 @@ class PolymarketUSClient:
             raise PolymarketUSError("polymarket-us SDK not installed")
         return self._client.markets.book(slug)
 
-    @_wrap
-    def get_bbo(self, slug: str) -> dict:
-        """Lightweight top-of-book best bid/offer."""
-        if not _HAS_SDK:
-            raise PolymarketUSError("polymarket-us SDK not installed")
-        return self._client.markets.bbo(slug)
+
+def _f_local(v, default):
+    try:
+        return float(v) if v is not None else default
+    except (TypeError, ValueError):
+        return default
 
     # ---- authenticated portfolio --------------------------------------------
 
@@ -174,6 +211,11 @@ _ORDER_TYPE_MAP = {
     "market": "ORDER_TYPE_MARKET",
 }
 
+# `best_bid_ask` lived here previously to extract prices from the SDK's
+# retrieve_by_slug response. That endpoint doesn't actually populate the
+# price fields — use `get_quote(slug)` above instead, which calls bbo()
+# and returns a flat dict.
+
 # Polymarket US uses the enum names verbatim in request bodies.
 _TIF_MAP = {
     "DAY": "TIME_IN_FORCE_DAY",
@@ -184,36 +226,3 @@ _TIF_MAP = {
 }
 
 
-# ---- normalization helpers ----------------------------------------------
-#
-# The SDK returns dicts whose exact field names match the REST docs
-# (camelCase, sometimes nested). These helpers paper over differences so
-# the scanner doesn't care about Poly's vs Kalshi's response shapes.
-
-def best_bid_ask(market: dict) -> tuple[float | None, float | None]:
-    """Pull best bid/ask out of either a `markets.retrieve_by_slug` or
-    `markets.bbo` response. Both are documented to expose top-of-book
-    prices; field names vary slightly between endpoints, so try a few.
-
-    Returns (yes_bid, yes_ask) as probabilities in [0,1], or (None, None)
-    if the market has no two-sided market.
-
-    For binary markets, NO side is just the complement: no_bid = 1 - yes_ask,
-    no_ask = 1 - yes_bid.
-    """
-    bid = _first_float(market, ("bestBid", "yes_bid", "bid", "topBid"))
-    ask = _first_float(market, ("bestAsk", "yes_ask", "ask", "topAsk"))
-    if bid is None and "bbo" in market:
-        bid = _first_float(market["bbo"], ("bid",))
-        ask = _first_float(market["bbo"], ("ask",))
-    return bid, ask
-
-
-def _first_float(d: dict, keys: tuple[str, ...]) -> float | None:
-    for k in keys:
-        if k in d and d[k] is not None:
-            try:
-                return float(d[k])
-            except (TypeError, ValueError):
-                continue
-    return None
