@@ -1,52 +1,439 @@
-# Curated pairs of Kalshi <-> Polymarket US markets for arb scanning.
-#
-# Each pair maps ONE specific Kalshi market ticker to ONE Polymarket US
-# market slug. v1 supports binary markets only: each pair has a YES side
-# and a NO side on both venues, and we scan for arb where buying YES on
-# one venue and NO on the other locks in profit after fees.
-#
-# Fields:
-#   key                 short stable identifier (used in URLs, logs, alerts)
-#   label               human-readable name shown in UI / notifications
-#   kalshi_ticker       exact Kalshi market ticker (NOT event_ticker — the
-#                       specific market, e.g. CONTROLH-2026-D)
-#   polymarket_us_slug  exact Polymarket US market slug
-#   yes_means           "same" (default) or "inverted". Use "inverted"
-#                       when one venue's YES corresponds to the other's NO.
-#   enabled             skip a pair without deleting its entry. Default true.
-#
-# The file is reloaded on every scan, so changes take effect without
-# restarting the app.
-
 pairs:
-  # 2026 U.S. House midterm — partisan control. Both venues quote two
-  # separate single-outcome markets (one for Dem winning, one for Rep
-  # winning). Pair each to its same-side counterpart.
-  - key: house-2026-dem
-    label: 2026 House — Dem wins
-    kalshi_ticker: CONTROLH-2026-D
-    polymarket_us_slug: paccc-usho-midterms-2026-11-03-dem
-    yes_means: same
-    enabled: true
-
-  - key: house-2026-rep
-    label: 2026 House — Rep wins
-    kalshi_ticker: CONTROLH-2026-R
-    polymarket_us_slug: paccc-usho-midterms-2026-11-03-rep
-    yes_means: same
-    enabled: true
-
-  # 2026 U.S. Senate midterm — same structure as House.
-  - key: senate-2026-dem
-    label: 2026 Senate — Dem wins
-    kalshi_ticker: CONTROLS-2026-D
-    polymarket_us_slug: paccc-usse-midterms-2026-11-03-dem
-    yes_means: same
-    enabled: true
-
-  - key: senate-2026-rep
-    label: 2026 Senate — Rep wins
-    kalshi_ticker: CONTROLS-2026-R
-    polymarket_us_slug: paccc-usse-midterms-2026-11-03-rep
-    yes_means: same
-    enabled: true
+- key: house-2026-dem
+  label: "2026 House \u2014 Dem wins"
+  kalshi_ticker: CONTROLH-2026-D
+  polymarket_us_slug: paccc-usho-midterms-2026-11-03-dem
+  yes_means: same
+  enabled: true
+- key: house-2026-rep
+  label: "2026 House \u2014 Rep wins"
+  kalshi_ticker: CONTROLH-2026-R
+  polymarket_us_slug: paccc-usho-midterms-2026-11-03-rep
+  yes_means: same
+  enabled: true
+- key: senate-2026-dem
+  label: "2026 Senate \u2014 Dem wins"
+  kalshi_ticker: CONTROLS-2026-D
+  polymarket_us_slug: paccc-usse-midterms-2026-11-03-dem
+  yes_means: same
+  enabled: true
+- key: senate-2026-rep
+  label: "2026 Senate \u2014 Rep wins"
+  kalshi_ticker: CONTROLS-2026-R
+  polymarket_us_slug: paccc-usse-midterms-2026-11-03-rep
+  yes_means: same
+  enabled: true
+- key: kxnhl-26-vgk
+  label: "NHL Stanley Cup 2026 \u2014 Vegas Golden Knights"
+  kalshi_ticker: KXNHL-26-VGK
+  polymarket_us_slug: tec-nhl-scw-2026-06-30-veg
+  yes_means: same
+  enabled: true
+- key: kxnhl-26-mtl
+  label: "NHL Stanley Cup 2026 \u2014 Montr\xE9al Canadiens"
+  kalshi_ticker: KXNHL-26-MTL
+  polymarket_us_slug: tec-nhl-scw-2026-06-30-mon
+  yes_means: same
+  enabled: true
+- key: kxnhl-26-col
+  label: "NHL Stanley Cup 2026 \u2014 Colorado Avalanche"
+  kalshi_ticker: KXNHL-26-COL
+  polymarket_us_slug: tec-nhl-scw-2026-06-30-col
+  yes_means: same
+  enabled: true
+- key: kxnhl-26-car
+  label: "NHL Stanley Cup 2026 \u2014 Carolina Hurricanes"
+  kalshi_ticker: KXNHL-26-CAR
+  polymarket_us_slug: tec-nhl-scw-2026-06-30-car
+  yes_means: same
+  enabled: true
+- key: kxnhl-26-buf
+  label: "NHL Stanley Cup 2026 \u2014 Buffalo Sabres"
+  kalshi_ticker: KXNHL-26-BUF
+  polymarket_us_slug: tec-nhl-scw-2026-06-30-buf
+  yes_means: same
+  enabled: true
+- key: kxnba-26-sas
+  label: "2026 NBA Champion \u2014 San Antonio"
+  kalshi_ticker: KXNBA-26-SAS
+  polymarket_us_slug: tec-nba-champ-2026-07-01-sa
+  yes_means: same
+  enabled: true
+- key: kxnba-26-okc
+  label: "2026 NBA Champion \u2014 Oklahoma City"
+  kalshi_ticker: KXNBA-26-OKC
+  polymarket_us_slug: tec-nba-champ-2026-07-01-okc
+  yes_means: same
+  enabled: true
+- key: kxnba-26-nyk
+  label: "2026 NBA Champion \u2014 New York"
+  kalshi_ticker: KXNBA-26-NYK
+  polymarket_us_slug: tec-nba-champ-2026-07-01-ny
+  yes_means: same
+  enabled: true
+- key: kxnba-26-cle
+  label: "2026 NBA Champion \u2014 Cleveland"
+  kalshi_ticker: KXNBA-26-CLE
+  polymarket_us_slug: tec-nba-champ-2026-07-01-cle
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-wsh
+  label: "2026 MLB World Series \u2014 Washington"
+  kalshi_ticker: KXMLB-26-WSH
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-wsh
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-tor
+  label: "2026 MLB World Series \u2014 Toronto"
+  kalshi_ticker: KXMLB-26-TOR
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-tor
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-tex
+  label: "2026 MLB World Series \u2014 Texas"
+  kalshi_ticker: KXMLB-26-TEX
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-tex
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-tb
+  label: "2026 MLB World Series \u2014 Tampa Bay"
+  kalshi_ticker: KXMLB-26-TB
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-tb
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-stl
+  label: "2026 MLB World Series \u2014 St. Louis"
+  kalshi_ticker: KXMLB-26-STL
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-stl
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-sf
+  label: "2026 MLB World Series \u2014 San Francisco"
+  kalshi_ticker: KXMLB-26-SF
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-sf
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-sea
+  label: "2026 MLB World Series \u2014 Seattle"
+  kalshi_ticker: KXMLB-26-SEA
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-sea
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-sd
+  label: "2026 MLB World Series \u2014 San Diego"
+  kalshi_ticker: KXMLB-26-SD
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-sd
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-pit
+  label: "2026 MLB World Series \u2014 Pittsburgh"
+  kalshi_ticker: KXMLB-26-PIT
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-pit
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-phi
+  label: "2026 MLB World Series \u2014 Philadelphia"
+  kalshi_ticker: KXMLB-26-PHI
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-phi
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-nyy
+  label: "2026 MLB World Series \u2014 New York Y"
+  kalshi_ticker: KXMLB-26-NYY
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-nyy
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-nym
+  label: "2026 MLB World Series \u2014 New York M"
+  kalshi_ticker: KXMLB-26-NYM
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-nym
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-min
+  label: "2026 MLB World Series \u2014 Minnesota"
+  kalshi_ticker: KXMLB-26-MIN
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-min
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-mil
+  label: "2026 MLB World Series \u2014 Milwaukee"
+  kalshi_ticker: KXMLB-26-MIL
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-mil
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-mia
+  label: "2026 MLB World Series \u2014 Miami"
+  kalshi_ticker: KXMLB-26-MIA
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-mia
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-lad
+  label: "2026 MLB World Series \u2014 Los Angeles D"
+  kalshi_ticker: KXMLB-26-LAD
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-lad
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-laa
+  label: "2026 MLB World Series \u2014 Los Angeles A"
+  kalshi_ticker: KXMLB-26-LAA
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-laa
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-kc
+  label: "2026 MLB World Series \u2014 Kansas City"
+  kalshi_ticker: KXMLB-26-KC
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-kc
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-hou
+  label: "2026 MLB World Series \u2014 Houston"
+  kalshi_ticker: KXMLB-26-HOU
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-hou
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-det
+  label: "2026 MLB World Series \u2014 Detroit"
+  kalshi_ticker: KXMLB-26-DET
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-det
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-cws
+  label: "2026 MLB World Series \u2014 Chicago WS"
+  kalshi_ticker: KXMLB-26-CWS
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-cws
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-col
+  label: "2026 MLB World Series \u2014 Colorado"
+  kalshi_ticker: KXMLB-26-COL
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-col
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-cle
+  label: "2026 MLB World Series \u2014 Cleveland"
+  kalshi_ticker: KXMLB-26-CLE
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-cle
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-cin
+  label: "2026 MLB World Series \u2014 Cincinnati"
+  kalshi_ticker: KXMLB-26-CIN
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-cin
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-chc
+  label: "2026 MLB World Series \u2014 Chicago C"
+  kalshi_ticker: KXMLB-26-CHC
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-chc
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-bos
+  label: "2026 MLB World Series \u2014 Boston"
+  kalshi_ticker: KXMLB-26-BOS
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-bos
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-bal
+  label: "2026 MLB World Series \u2014 Baltimore"
+  kalshi_ticker: KXMLB-26-BAL
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-bal
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-az
+  label: "2026 MLB World Series \u2014 Arizona"
+  kalshi_ticker: KXMLB-26-AZ
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-az
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-atl
+  label: "2026 MLB World Series \u2014 Atlanta"
+  kalshi_ticker: KXMLB-26-ATL
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-atl
+  yes_means: same
+  enabled: true
+- key: kxmlb-26-ath
+  label: "2026 MLB World Series \u2014 A's"
+  kalshi_ticker: KXMLB-26-ATH
+  polymarket_us_slug: tec-mlb-champ-2026-09-27-ath
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-tor
+  label: "2026 MLB AL Champion \u2014 Toronto"
+  kalshi_ticker: KXMLBAL-26-TOR
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-tor
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-tex
+  label: "2026 MLB AL Champion \u2014 Texas"
+  kalshi_ticker: KXMLBAL-26-TEX
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-tex
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-tb
+  label: "2026 MLB AL Champion \u2014 Tampa Bay"
+  kalshi_ticker: KXMLBAL-26-TB
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-tb
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-sea
+  label: "2026 MLB AL Champion \u2014 Seattle"
+  kalshi_ticker: KXMLBAL-26-SEA
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-sea
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-nyy
+  label: "2026 MLB AL Champion \u2014 New York Y"
+  kalshi_ticker: KXMLBAL-26-NYY
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-nyy
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-min
+  label: "2026 MLB AL Champion \u2014 Minnesota"
+  kalshi_ticker: KXMLBAL-26-MIN
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-min
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-laa
+  label: "2026 MLB AL Champion \u2014 Los Angeles A"
+  kalshi_ticker: KXMLBAL-26-LAA
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-laa
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-kc
+  label: "2026 MLB AL Champion \u2014 Kansas City"
+  kalshi_ticker: KXMLBAL-26-KC
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-kc
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-hou
+  label: "2026 MLB AL Champion \u2014 Houston"
+  kalshi_ticker: KXMLBAL-26-HOU
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-hou
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-det
+  label: "2026 MLB AL Champion \u2014 Detroit"
+  kalshi_ticker: KXMLBAL-26-DET
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-det
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-cws
+  label: "2026 MLB AL Champion \u2014 Chicago WS"
+  kalshi_ticker: KXMLBAL-26-CWS
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-cws
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-cle
+  label: "2026 MLB AL Champion \u2014 Cleveland"
+  kalshi_ticker: KXMLBAL-26-CLE
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-cle
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-bos
+  label: "2026 MLB AL Champion \u2014 Boston"
+  kalshi_ticker: KXMLBAL-26-BOS
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-bos
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-bal
+  label: "2026 MLB AL Champion \u2014 Baltimore"
+  kalshi_ticker: KXMLBAL-26-BAL
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-bal
+  yes_means: same
+  enabled: true
+- key: kxmlbal-26-ath
+  label: "2026 MLB AL Champion \u2014 A's"
+  kalshi_ticker: KXMLBAL-26-ATH
+  polymarket_us_slug: tec-mlb-alchamp-2026-09-27-ath
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-wsh
+  label: "2026 MLB NL Champion \u2014 Washington"
+  kalshi_ticker: KXMLBNL-26-WSH
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-wsh
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-stl
+  label: "2026 MLB NL Champion \u2014 St. Louis"
+  kalshi_ticker: KXMLBNL-26-STL
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-stl
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-sf
+  label: "2026 MLB NL Champion \u2014 San Francisco"
+  kalshi_ticker: KXMLBNL-26-SF
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-sf
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-sd
+  label: "2026 MLB NL Champion \u2014 San Diego"
+  kalshi_ticker: KXMLBNL-26-SD
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-sd
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-pit
+  label: "2026 MLB NL Champion \u2014 Pittsburgh"
+  kalshi_ticker: KXMLBNL-26-PIT
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-pit
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-phi
+  label: "2026 MLB NL Champion \u2014 Philadelphia"
+  kalshi_ticker: KXMLBNL-26-PHI
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-phi
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-nym
+  label: "2026 MLB NL Champion \u2014 New York M"
+  kalshi_ticker: KXMLBNL-26-NYM
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-nym
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-mil
+  label: "2026 MLB NL Champion \u2014 Milwaukee"
+  kalshi_ticker: KXMLBNL-26-MIL
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-mil
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-mia
+  label: "2026 MLB NL Champion \u2014 Miami"
+  kalshi_ticker: KXMLBNL-26-MIA
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-mia
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-lad
+  label: "2026 MLB NL Champion \u2014 Los Angeles D"
+  kalshi_ticker: KXMLBNL-26-LAD
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-lad
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-col
+  label: "2026 MLB NL Champion \u2014 Colorado"
+  kalshi_ticker: KXMLBNL-26-COL
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-col
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-cin
+  label: "2026 MLB NL Champion \u2014 Cincinnati"
+  kalshi_ticker: KXMLBNL-26-CIN
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-cin
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-chc
+  label: "2026 MLB NL Champion \u2014 Chicago C"
+  kalshi_ticker: KXMLBNL-26-CHC
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-chc
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-az
+  label: "2026 MLB NL Champion \u2014 Arizona"
+  kalshi_ticker: KXMLBNL-26-AZ
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-az
+  yes_means: same
+  enabled: true
+- key: kxmlbnl-26-atl
+  label: "2026 MLB NL Champion \u2014 Atlanta"
+  kalshi_ticker: KXMLBNL-26-ATL
+  polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-atl
+  yes_means: same
+  enabled: true
