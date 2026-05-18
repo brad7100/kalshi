@@ -38,7 +38,15 @@
 <div id="settingsPanel" class="hidden bg-gray-800 border-b border-gray-700 px-4 py-3 text-sm space-y-3">
   <div class="font-semibold">Display & alerts</div>
   <label class="flex items-center justify-between gap-3">
-    <span>Show pairs with spread ≥</span>
+    <span>Min annualized return</span>
+    <span class="flex items-center gap-1">
+      <input id="setMinAnnualized" type="number" step="1" min="0" max="500"
+             class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
+      <span>%</span>
+    </span>
+  </label>
+  <label class="flex items-center justify-between gap-3">
+    <span>Min spread (¢/contract)</span>
     <span class="flex items-center gap-1">
       <input id="setMinSpread" type="number" step="0.1" min="-10" max="20"
              class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
@@ -50,6 +58,10 @@
     <input id="setContracts" type="number" step="1" min="1" max="10000"
            class="bg-gray-900 border border-gray-700 rounded px-2 py-1 w-20 num text-right" />
   </label>
+  <div class="text-[10px] text-gray-500">
+    Spread alone is misleading — a 1¢ arb resolving in 5 months annualizes to ~2.5%
+    (worse than T-bills). Set the annualized floor to your hurdle rate (15-25%+).
+  </div>
   <div class="text-[10px] text-gray-500">
     Push alerts (ntfy) are configured server-side via env vars
     (<code>NTFY_TOPIC</code>, <code>NTFY_ARB_SPREAD_C</code>). The threshold
@@ -153,6 +165,7 @@ let lastHealth = null;
 let dryRun = true;
 const settings = {
   minSpreadC: -5.0,
+  minAnnualizedPct: 20.0,    // hurdle rate; 20% beats most fixed-income alternatives
   contracts: 100,
 };
 
@@ -198,10 +211,12 @@ function loadSettings() {
     Object.assign(settings, JSON.parse(localStorage.getItem('arb_settings') || '{}'));
   } catch {}
   document.getElementById('setMinSpread').value = settings.minSpreadC;
+  document.getElementById('setMinAnnualized').value = settings.minAnnualizedPct;
   document.getElementById('setContracts').value = settings.contracts;
 }
 function saveSettings() {
   settings.minSpreadC = parseFloat(document.getElementById('setMinSpread').value);
+  settings.minAnnualizedPct = parseFloat(document.getElementById('setMinAnnualized').value);
   settings.contracts  = parseInt(document.getElementById('setContracts').value, 10) || 100;
   localStorage.setItem('arb_settings', JSON.stringify(settings));
 }
@@ -235,7 +250,10 @@ async function refreshHealth() {
 async function refreshScan() {
   setStatus('Scanning…', 'text-blue-300');
   try {
-    const data = await api(`/api/scan?contracts=${settings.contracts}&min_spread=${settings.minSpreadC}`);
+    const url = `/api/scan?contracts=${settings.contracts}`
+              + `&min_spread=${settings.minSpreadC}`
+              + `&min_annualized=${settings.minAnnualizedPct}`;
+    const data = await api(url);
     scanData = data;
     renderOpps();
     renderAll();
@@ -270,23 +288,47 @@ function legCard(leg, label) {
     </div>`;
 }
 
+function annColor(pct) {
+  if (pct == null) return 'text-gray-400';
+  if (pct >= 50) return 'text-emerald-300';
+  if (pct >= 20) return 'text-emerald-400';
+  if (pct >= 5)  return 'text-amber-400';
+  return 'text-gray-500';
+}
+
+function fmtPct(pct) {
+  if (pct == null) return '—';
+  const sign = pct > 0 ? '+' : '';
+  return `${sign}${pct.toFixed(1)}%`;
+}
+
+function fmtDays(d) {
+  if (d == null) return '—';
+  if (d < 1) return '<1d';
+  if (d < 31) return `${Math.round(d)}d`;
+  if (d < 365) return `${(d/30.4).toFixed(1)}mo`;
+  return `${(d/365).toFixed(1)}y`;
+}
+
 function oppCard(row) {
   const positive = row.locked_spread_cents > 0;
+  const ann = row.annualized_return_pct;
   const spreadColor = positive
     ? 'text-emerald-400'
     : (row.locked_spread_cents > -1 ? 'text-amber-400' : 'text-gray-500');
-  const totalLocked = (row.locked_spread / 100) * settings.contracts;  // $ at default size
-  const ringColor = positive ? 'ring-emerald-700' : 'ring-gray-700';
+  const ringColor = positive
+    ? (ann != null && ann >= 20 ? 'ring-emerald-500' : 'ring-emerald-700')
+    : 'ring-gray-700';
   return `
     <div class="bg-gray-800 rounded-lg p-3 ring-1 ${ringColor}">
       <div class="flex items-baseline justify-between mb-2">
         <div class="min-w-0">
           <div class="text-sm font-semibold truncate">${row.label}</div>
-          <div class="text-[10px] text-gray-500 num">${row.pair_key} · dir ${row.direction}</div>
+          <div class="text-[10px] text-gray-500 num">${row.pair_key} · dir ${row.direction} · resolves ${fmtDays(row.days_to_resolve)}</div>
         </div>
         <div class="text-right shrink-0">
-          <div class="text-xl font-bold ${spreadColor} num">${fmtC(row.locked_spread_cents, true)}</div>
-          <div class="text-[10px] text-gray-500">/ contract</div>
+          <div class="text-xl font-bold ${annColor(ann)} num">${fmtPct(ann)}<span class="text-[10px] text-gray-400 font-normal"> /yr</span></div>
+          <div class="text-[10px] ${spreadColor} num">${fmtC(row.locked_spread_cents, true)}/contract</div>
         </div>
       </div>
       <div class="grid grid-cols-2 gap-2">
@@ -308,14 +350,22 @@ function oppCard(row) {
 
 function renderOpps() {
   const el = document.getElementById('oppsList');
-  const rows = (scanData?.rows || []).filter(r => r.locked_spread_cents >= settings.minSpreadC);
+  // Server has already applied min_annualized + min_spread, but apply
+  // them again client-side in case settings changed after the last fetch.
+  const rows = (scanData?.rows || []).filter(r =>
+    r.locked_spread_cents >= settings.minSpreadC
+    && (r.annualized_return_pct == null
+        || r.annualized_return_pct >= settings.minAnnualizedPct)
+  );
   if (rows.length === 0) {
     el.innerHTML = `
       <div class="text-gray-500 text-sm py-8 text-center">
-        No opportunities at or above ${settings.minSpreadC.toFixed(2)}¢/contract.
+        No opportunities clearing <b>${settings.minAnnualizedPct.toFixed(0)}%/yr</b>
+        and <b>${settings.minSpreadC.toFixed(1)}¢/contract</b>.
+        <br><br>
         ${(scanData?.pairs?.length || 0) === 0
-          ? '<br><br>Add pairs to <code>markets.yaml</code> on the server.'
-          : ''}
+          ? 'Add pairs to <code>markets.yaml</code> on the server.'
+          : 'Lower the thresholds in <span class="text-white">⚙ settings</span> to see near-misses.'}
       </div>`;
     return;
   }
@@ -330,20 +380,24 @@ function renderAll() {
     return;
   }
   el.innerHTML = `
-    <div class="grid grid-cols-12 gap-2 px-3 py-2 bg-gray-900/60 text-[10px] uppercase tracking-wider text-gray-500">
-      <div class="col-span-5">Pair</div>
+    <div class="grid grid-cols-12 gap-1 px-2 py-2 bg-gray-900/60 text-[10px] uppercase tracking-wider text-gray-500">
+      <div class="col-span-4">Pair</div>
       <div class="col-span-1 text-center">Dir</div>
-      <div class="col-span-2 text-right">Kalshi</div>
-      <div class="col-span-2 text-right">Poly</div>
-      <div class="col-span-2 text-right">Spread</div>
+      <div class="col-span-2 text-right">K leg</div>
+      <div class="col-span-2 text-right">P leg</div>
+      <div class="col-span-1 text-right">¢</div>
+      <div class="col-span-1 text-right">days</div>
+      <div class="col-span-1 text-right">%/yr</div>
     </div>
     ${rows.map(r => `
-      <div class="grid grid-cols-12 gap-2 px-3 py-2 hover:bg-gray-800/50">
-        <div class="col-span-5 truncate">${r.label}</div>
+      <div class="grid grid-cols-12 gap-1 px-2 py-2 hover:bg-gray-800/50">
+        <div class="col-span-4 truncate">${r.label}</div>
         <div class="col-span-1 text-center text-gray-400">${r.direction}</div>
         <div class="col-span-2 text-right">${r.kalshi_leg.side.toUpperCase()} ${fmtPrice(r.kalshi_leg.price)}</div>
         <div class="col-span-2 text-right">${r.poly_leg.side.toUpperCase()} ${fmtPrice(r.poly_leg.price)}</div>
-        <div class="col-span-2 text-right ${r.locked_spread_cents > 0 ? 'text-emerald-400' : 'text-gray-500'}">${fmtC(r.locked_spread_cents, true)}</div>
+        <div class="col-span-1 text-right ${r.locked_spread_cents > 0 ? 'text-emerald-400' : 'text-gray-500'}">${fmtC(r.locked_spread_cents, true)}</div>
+        <div class="col-span-1 text-right text-gray-400">${fmtDays(r.days_to_resolve)}</div>
+        <div class="col-span-1 text-right ${annColor(r.annualized_return_pct)}">${fmtPct(r.annualized_return_pct)}</div>
       </div>
     `).join('')}`;
 }
@@ -768,6 +822,10 @@ document.getElementById('settingsBtn').addEventListener('click', () => {
 });
 
 document.getElementById('setMinSpread').addEventListener('change', () => {
+  saveSettings();
+  refreshScan();
+});
+document.getElementById('setMinAnnualized').addEventListener('change', () => {
   saveSettings();
   refreshScan();
 });

@@ -242,6 +242,11 @@ def parse_kalshi_quote(market: dict) -> dict:
         "last_price": _f(market.get("last_price_dollars")),
         "volume": _f(market.get("volume_fp"), 0.0) or 0.0,
         "status": market.get("status"),
+        # `close_time` is when trading ends; `expiration_time` when it
+        # settles. Prefer close_time as a conservative "money locked
+        # until" estimate.
+        "end_date": (market.get("close_time")
+                     or market.get("expiration_time")),
     }
 
 
@@ -255,6 +260,33 @@ def _poly() -> PolymarketUSClient:
     if _poly_client is None:
         _poly_client = PolymarketUSClient()
     return _poly_client
+
+
+# Polymarket per-slug metadata (end_date) cache. The bbo() endpoint we
+# call on every scan does NOT include end_date, so we look it up via
+# retrieve_by_slug once per slug and cache for an hour. Markets very
+# rarely have their resolution date change.
+_POLY_META_TTL_SEC = float(os.getenv("POLY_META_TTL_SEC", "3600"))
+_poly_meta_cache: dict[str, tuple[float, dict]] = {}
+_poly_meta_lock = _threading.Lock()
+
+
+def _poly_meta_for(slug: str) -> dict:
+    """Get cached metadata (end_date) for a Polymarket slug. Hourly TTL."""
+    import time as _t
+    now = _t.time()
+    with _poly_meta_lock:
+        entry = _poly_meta_cache.get(slug)
+        if entry and now - entry[0] < _POLY_META_TTL_SEC:
+            return entry[1]
+    try:
+        m = _poly().get_market_meta(slug) or {}
+        meta = {"end_date": m.get("endDate")}
+    except PolymarketUSError:
+        meta = {"end_date": None}
+    with _poly_meta_lock:
+        _poly_meta_cache[slug] = (now, meta)
+    return meta
 
 
 def parse_poly_quote(quote: dict, *, inverted: bool) -> dict:
@@ -358,15 +390,55 @@ def _build_legs(kq: dict, pq: dict, contracts: int) -> list[dict]:
 
 # ---- entry point -----------------------------------------------------------
 
+def _days_until(date_str: str | None) -> float | None:
+    """Days from now until the given ISO date string, or None if missing.
+
+    Accepts shapes like '2026-09-27T13:00:00Z' or '2026-09-27'.
+    Returns 0.001 if the date is in the past (so we don't divide by 0).
+    """
+    if not date_str:
+        return None
+    import datetime as _dt
+    s = str(date_str)
+    try:
+        if "T" in s:
+            s2 = s.replace("Z", "+00:00")
+            end = _dt.datetime.fromisoformat(s2)
+        else:
+            end = _dt.datetime.fromisoformat(s).replace(tzinfo=_dt.timezone.utc)
+        now = _dt.datetime.now(_dt.timezone.utc)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=_dt.timezone.utc)
+        delta = (end - now).total_seconds() / 86400.0
+        return max(0.001, delta)
+    except (ValueError, TypeError):
+        return None
+
+
+def _annualize(locked_spread: float, cost_per_contract: float,
+               days_to_resolve: float | None) -> float | None:
+    """Simple annualized return on capital locked until resolution:
+        (locked / cost) × (365 / days)
+    Returns None if days is unknown."""
+    if days_to_resolve is None or cost_per_contract <= 0:
+        return None
+    return (locked_spread / cost_per_contract) * (365.0 / days_to_resolve)
+
+
 def run_scan(contracts: int = 100, min_spread_cents: float = 0.0,
+             min_annualized_pct: float | None = None,
              registry_path: str | None = None) -> dict:
     """Scan every enabled pair, return both arb directions.
 
-    contracts:        size used to compute fee per contract (Kalshi fee
-                      depends on contract count due to round-up-to-cent).
-    min_spread_cents: only return rows with locked_spread >= this many cents
-                      per contract. Default 0 = show every positive arb.
-                      Pass negative to surface near-misses for debugging.
+    contracts:           size used to compute fee per contract.
+    min_spread_cents:    keep only rows with locked_spread >= this many ¢/contract.
+                         Default 0 = positive arbs only. Pass negative to
+                         surface near-misses for debugging.
+    min_annualized_pct:  if not None, additionally drop rows whose
+                         annualized return is below this percentage. Rows
+                         with unknown end_date are kept (returned with
+                         annualized_return_pct=None so the UI can flag
+                         them).
     """
     pairs = load_registry(registry_path)
     poly = _poly()
@@ -405,11 +477,36 @@ def run_scan(contracts: int = 100, min_spread_cents: float = 0.0,
             poly_q = parse_poly_quote(poly_raw, inverted=(cfg.yes_means == "inverted"))
         except PolymarketUSError as e:
             errors.append(f"polymarket {cfg.key} ({cfg.polymarket_us_slug}): {e}")
+
+        # Resolve `end_date` — use the earlier of the two venues' dates
+        # (capital is locked until BOTH legs resolve). Poly metadata is
+        # cached separately so we don't pay per scan.
+        k_end = kalshi_q.get("end_date") if kalshi_q else None
+        p_end = _poly_meta_for(cfg.polymarket_us_slug).get("end_date") if poly_q else None
+        k_days = _days_until(k_end)
+        p_days = _days_until(p_end)
+        if k_days is not None and p_days is not None:
+            days_to_resolve = max(k_days, p_days)
+        else:
+            days_to_resolve = k_days if k_days is not None else p_days
+
         rows = _build_legs(kalshi_q, poly_q, contracts) if (kalshi_q and poly_q) else []
         for r in rows:
             r["pair_key"] = cfg.key
             r["label"] = cfg.label
+            r["kalshi_end_date"] = k_end
+            r["poly_end_date"] = p_end
+            r["days_to_resolve"] = days_to_resolve
+            ann = _annualize(r["locked_spread"], r["cost_per_contract"], days_to_resolve)
+            r["annualized_return_pct"] = round(ann * 100, 2) if ann is not None else None
+
         kept = [r for r in rows if r["locked_spread_cents"] >= min_spread_cents]
+        if min_annualized_pct is not None:
+            # Keep rows where annualized clears the threshold OR where we
+            # don't know the date (so they're at least visible to inspect).
+            kept = [r for r in kept
+                    if r["annualized_return_pct"] is None
+                    or r["annualized_return_pct"] >= min_annualized_pct]
         all_rows.extend(kept)
         pairs_info.append({
             "key": cfg.key,
@@ -424,12 +521,19 @@ def run_scan(contracts: int = 100, min_spread_cents: float = 0.0,
             "poly_quote": poly_q,
         })
 
-    all_rows.sort(key=lambda r: r["locked_spread_cents"], reverse=True)
+    # Sort: known-annualized rows first by annualized %, then unknown rows
+    # by raw spread. (Unknown dates shouldn't outrank a real arb.)
+    all_rows.sort(key=lambda r: (
+        1 if r.get("annualized_return_pct") is not None else 0,
+        r.get("annualized_return_pct") or 0,
+        r.get("locked_spread_cents") or 0,
+    ), reverse=True)
     return {
         "rows": all_rows,
         "pairs": pairs_info,
         "contracts": contracts,
         "min_spread_cents": min_spread_cents,
+        "min_annualized_pct": min_annualized_pct,
         "poly_us_taker_fee_bps": POLY_US_TAKER_FEE_BPS,
         "errors": errors,
     }
