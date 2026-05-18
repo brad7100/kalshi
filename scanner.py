@@ -262,31 +262,60 @@ def _poly() -> PolymarketUSClient:
     return _poly_client
 
 
-# Polymarket per-slug metadata (end_date) cache. The bbo() endpoint we
-# call on every scan does NOT include end_date, so we look it up via
-# retrieve_by_slug once per slug and cache for an hour. Markets very
-# rarely have their resolution date change.
+# Polymarket per-slug metadata (end_date) cache, populated in bulk via
+# markets.list() which returns endDate on every market. retrieve_by_slug
+# returns an empty payload for many sports slugs (SDK bug or routing
+# quirk), so we don't use it here.
 _POLY_META_TTL_SEC = float(os.getenv("POLY_META_TTL_SEC", "3600"))
-_poly_meta_cache: dict[str, tuple[float, dict]] = {}
+_poly_meta_bulk: dict[str, dict] = {}   # slug -> {"end_date": str|None}
+_poly_meta_bulk_ts: float = 0.0
 _poly_meta_lock = _threading.Lock()
 
 
+def _refresh_poly_meta_bulk() -> None:
+    """Pull every open Polymarket US market once, populate {slug:
+    {end_date}} map. Cheap relative to per-slug lookups since one
+    paginated list call covers hundreds of markets."""
+    import time as _t
+    global _poly_meta_bulk_ts
+    try:
+        pc = _poly()._client
+        out: dict[str, dict] = {}
+        cursor = None
+        for _ in range(30):
+            params = {"limit": 200, "closed": False, "active": True}
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                r = pc.markets.list(params)
+            except Exception:
+                break
+            for m in r.get("markets", []) or []:
+                slug = m.get("slug")
+                if slug:
+                    out[slug] = {"end_date": m.get("endDate")}
+            cursor = r.get("nextCursor")
+            if not cursor or r.get("eof"):
+                break
+        with _poly_meta_lock:
+            _poly_meta_bulk.clear()
+            _poly_meta_bulk.update(out)
+            _poly_meta_bulk_ts = _t.time()
+    except Exception:
+        pass
+
+
 def _poly_meta_for(slug: str) -> dict:
-    """Get cached metadata (end_date) for a Polymarket slug. Hourly TTL."""
+    """Get cached metadata (end_date) for a Polymarket slug. Bulk cache
+    refreshed every POLY_META_TTL_SEC (default 1h)."""
     import time as _t
     now = _t.time()
     with _poly_meta_lock:
-        entry = _poly_meta_cache.get(slug)
-        if entry and now - entry[0] < _POLY_META_TTL_SEC:
-            return entry[1]
-    try:
-        m = _poly().get_market_meta(slug) or {}
-        meta = {"end_date": m.get("endDate")}
-    except PolymarketUSError:
-        meta = {"end_date": None}
+        stale = (now - _poly_meta_bulk_ts) > _POLY_META_TTL_SEC
+    if stale:
+        _refresh_poly_meta_bulk()
     with _poly_meta_lock:
-        _poly_meta_cache[slug] = (now, meta)
-    return meta
+        return _poly_meta_bulk.get(slug, {"end_date": None})
 
 
 def parse_poly_quote(quote: dict, *, inverted: bool) -> dict:
@@ -485,8 +514,11 @@ def run_scan(contracts: int = 100, min_spread_cents: float = 0.0,
         p_end = _poly_meta_for(cfg.polymarket_us_slug).get("end_date") if poly_q else None
         k_days = _days_until(k_end)
         p_days = _days_until(p_end)
+        # Use the EARLIER date — both venues settle near the actual event;
+        # the later "end" is usually admin overhead (a redemption window
+        # or archive close), not the date capital is freed.
         if k_days is not None and p_days is not None:
-            days_to_resolve = max(k_days, p_days)
+            days_to_resolve = min(k_days, p_days)
         else:
             days_to_resolve = k_days if k_days is not None else p_days
 
