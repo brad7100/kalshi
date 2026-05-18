@@ -62,10 +62,11 @@
   <div id="healthDump" class="text-[10px] text-gray-500 font-mono whitespace-pre-wrap"></div>
 </div>
 
-<nav class="sticky top-[57px] z-20 bg-gray-900/95 backdrop-blur border-b border-gray-800 flex text-sm">
-  <button data-tab="opps" class="tab flex-1 py-3 border-b-2 border-green-500 text-green-400">Opportunities</button>
-  <button data-tab="pos"  class="tab flex-1 py-3 border-b-2 border-transparent text-gray-400">Positions</button>
-  <button data-tab="all"  class="tab flex-1 py-3 border-b-2 border-transparent text-gray-400">All Pairs</button>
+<nav class="sticky top-[57px] z-20 bg-gray-900/95 backdrop-blur border-b border-gray-800 flex text-xs">
+  <button data-tab="opps"     class="tab flex-1 py-3 border-b-2 border-green-500 text-green-400">Opps</button>
+  <button data-tab="pos"      class="tab flex-1 py-3 border-b-2 border-transparent text-gray-400">Positions</button>
+  <button data-tab="all"      class="tab flex-1 py-3 border-b-2 border-transparent text-gray-400">All Pairs</button>
+  <button data-tab="discover" class="tab flex-1 py-3 border-b-2 border-transparent text-gray-400">Discover</button>
 </nav>
 
 <section id="tab-opps" class="px-3 pt-3">
@@ -83,6 +84,42 @@
 
 <section id="tab-all" class="px-3 pt-3 hidden">
   <div id="allList" class="rounded overflow-hidden bg-gray-800/40 divide-y divide-gray-800 text-xs num"></div>
+</section>
+
+<section id="tab-discover" class="px-3 pt-3 hidden">
+  <div class="bg-gray-800 rounded-lg p-3 mb-3 text-xs space-y-2">
+    <div class="flex items-center justify-between">
+      <div class="font-semibold text-sm">Cross-venue market discovery</div>
+      <div id="discoveryStatus" class="text-[10px] text-gray-400">—</div>
+    </div>
+    <div class="text-gray-400">
+      Pulls every open Kalshi + Polymarket US market, pre-filters by text similarity, then has Claude
+      verify each candidate by reading both sides' resolution rules. Matched pairs land here for review;
+      tap <b>Add</b> to write a pair into <code>markets.yaml</code> (scanner picks it up on next tick).
+    </div>
+    <div class="flex flex-wrap gap-2 mt-1">
+      <button id="discoverRunBtn"
+              class="bg-blue-700 active:bg-blue-800 text-xs font-bold px-3 py-2 rounded">
+        Run discovery
+      </button>
+      <button id="discoverRunNoLlmBtn"
+              class="bg-gray-700 active:bg-gray-600 text-xs px-3 py-2 rounded">
+        Run (prefilter only)
+      </button>
+      <label class="flex items-center gap-1 ml-auto">
+        <input id="filterMatchesOnly" type="checkbox" class="w-4 h-4" checked />
+        <span>LLM-matched only</span>
+      </label>
+      <label class="flex items-center gap-1">
+        <span>min conf</span>
+        <input id="filterMinConf" type="number" min="0" max="100" value="70"
+               class="bg-gray-900 border border-gray-700 rounded px-1 py-0.5 w-14 num text-right" />
+      </label>
+    </div>
+  </div>
+  <div id="discoverList" class="space-y-2">
+    <div class="text-gray-500 text-sm py-8 text-center">No discovery results yet. Tap <b>Run discovery</b>.</div>
+  </div>
 </section>
 
 <!-- Execute Modal -->
@@ -508,6 +545,163 @@ async function doExecute() {
   }
 }
 
+// ---- discovery -----------------------------------------------------------
+
+let discoveryPollTimer = null;
+const rejectedKeys = (() => {
+  try { return new Set(JSON.parse(localStorage.getItem('arb_rejected') || '[]')); }
+  catch { return new Set(); }
+})();
+function saveRejected() {
+  localStorage.setItem('arb_rejected', JSON.stringify([...rejectedKeys]));
+}
+
+async function refreshDiscoveryStatus() {
+  try {
+    const s = await api('/api/discovery/status');
+    const el = document.getElementById('discoveryStatus');
+    if (s.running) {
+      el.innerHTML = `<span class="text-blue-400">running…</span> started ${s.started_at || '?'}`;
+      // Poll every 3s while running
+      if (!discoveryPollTimer) {
+        discoveryPollTimer = setInterval(refreshDiscoveryStatus, 3000);
+      }
+    } else {
+      if (discoveryPollTimer) {
+        clearInterval(discoveryPollTimer);
+        discoveryPollTimer = null;
+        refreshDiscovery();   // refresh list once a run completes
+      }
+      const last = s.last_summary;
+      const llm = s.anthropic_configured ? '<span class="text-emerald-400">Claude wired</span>' : '<span class="text-amber-400">ANTHROPIC_API_KEY not set</span>';
+      el.innerHTML = last
+        ? `last run ${last.fetched_at} — ${last.match_count}/${last.candidate_count} matches in ${last.elapsed_sec}s · ${llm}`
+        : `never run · ${llm}`;
+      if (s.error) {
+        el.innerHTML += `<br><span class="text-red-300">err: ${s.error}</span>`;
+      }
+    }
+  } catch (e) {
+    document.getElementById('discoveryStatus').textContent = `err: ${e.message}`;
+  }
+}
+
+async function startDiscovery(doLlm) {
+  try {
+    const r = await api(`/api/discovery/run?do_llm=${doLlm}`, { method: 'POST' });
+    if (!r.ok) {
+      alert(`Could not start: ${r.reason}`);
+      return;
+    }
+    refreshDiscoveryStatus();
+  } catch (e) {
+    alert(`start failed: ${e.message}`);
+  }
+}
+
+function candidateKey(c) {
+  return `${c.poly.market_id}|${c.kalshi.market_id}`;
+}
+
+async function refreshDiscovery() {
+  const matchesOnly = document.getElementById('filterMatchesOnly').checked;
+  const minConf = parseInt(document.getElementById('filterMinConf').value, 10) || 0;
+  let data;
+  try {
+    data = await api(`/api/discovery/candidates?matches_only=${matchesOnly}&min_confidence=${minConf}&limit=200`);
+  } catch (e) {
+    document.getElementById('discoverList').innerHTML = `<div class="text-red-400 text-sm py-4 text-center">${e.message}</div>`;
+    return;
+  }
+  const el = document.getElementById('discoverList');
+  let candidates = (data.candidates || []).filter(c => !rejectedKeys.has(candidateKey(c)));
+  if (!candidates.length) {
+    el.innerHTML = `<div class="text-gray-500 text-sm py-8 text-center">
+      ${data.fetched_at ? 'No candidates match the current filters.' : 'No discovery results yet.'}
+    </div>`;
+    return;
+  }
+  el.innerHTML = candidates.map(c => discoverCard(c)).join('');
+  // Wire buttons
+  el.querySelectorAll('[data-add]').forEach(btn => btn.addEventListener('click', () => promoteCandidate(btn)));
+  el.querySelectorAll('[data-reject]').forEach(btn => btn.addEventListener('click', () => rejectCandidate(btn)));
+}
+
+function discoverCard(c) {
+  const conf = c.llm_confidence != null ? `${c.llm_confidence}` : '—';
+  const matchBadge = c.llm_match === true
+    ? `<span class="bg-emerald-700 text-emerald-100 px-2 py-0.5 rounded text-[10px] font-bold">MATCH ${conf}%</span>`
+    : c.llm_match === false
+      ? `<span class="bg-red-800 text-red-200 px-2 py-0.5 rounded text-[10px] font-bold">NO ${conf}%</span>`
+      : `<span class="bg-gray-700 text-gray-300 px-2 py-0.5 rounded text-[10px]">prefilter ${(c.prefilter_score*100).toFixed(0)}</span>`;
+  const inv = c.llm_inverted ? `<span class="bg-amber-800 text-amber-100 px-2 py-0.5 rounded text-[10px] ml-1">inverted</span>` : '';
+  const reason = c.llm_reason || c.llm_error || '';
+  return `
+    <div class="bg-gray-800 rounded-lg p-3 space-y-2">
+      <div class="flex items-center gap-2 flex-wrap">
+        ${matchBadge}${inv}
+        <span class="text-[10px] text-gray-500 num">sim ${(c.prefilter_score*100).toFixed(0)}</span>
+      </div>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <div class="border-l-4 border-l-blue-500 bg-blue-900/20 rounded p-2">
+          <div class="text-[10px] uppercase text-blue-300">Kalshi</div>
+          <div class="font-mono text-[11px] truncate">${c.kalshi.market_id}</div>
+          <div class="text-gray-300 mt-1">${c.kalshi.title}</div>
+          <div class="text-[10px] text-gray-500 mt-1 num">ends ${(c.kalshi.end_date || '').slice(0,10) || '?'}</div>
+        </div>
+        <div class="border-l-4 border-l-fuchsia-500 bg-fuchsia-900/20 rounded p-2">
+          <div class="text-[10px] uppercase text-fuchsia-300">Polymarket US</div>
+          <div class="font-mono text-[11px] truncate">${c.poly.market_id}</div>
+          <div class="text-gray-300 mt-1">${c.poly.title}</div>
+          <div class="text-[10px] text-gray-500 mt-1 num">ends ${(c.poly.end_date || '').slice(0,10) || '?'}</div>
+        </div>
+      </div>
+      ${reason ? `<div class="text-[11px] text-gray-400 italic">${reason}</div>` : ''}
+      <div class="flex gap-2">
+        <button data-add data-poly="${c.poly.market_id}" data-kalshi="${c.kalshi.market_id}"
+                data-label="${c.kalshi.title.replace(/"/g,'&quot;').slice(0,60)}"
+                data-inverted="${c.llm_inverted ? '1' : '0'}"
+                class="flex-1 bg-green-700 active:bg-green-800 text-xs font-bold px-3 py-2 rounded ${c.llm_match ? '' : 'opacity-70'}">
+          Add to registry
+        </button>
+        <button data-reject data-key="${candidateKey(c)}"
+                class="bg-gray-700 active:bg-gray-600 text-xs px-3 py-2 rounded">
+          Reject
+        </button>
+      </div>
+    </div>`;
+}
+
+async function promoteCandidate(btn) {
+  btn.disabled = true;
+  btn.textContent = 'Adding…';
+  try {
+    const r = await api('/api/discovery/promote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        poly_slug: btn.dataset.poly,
+        kalshi_ticker: btn.dataset.kalshi,
+        label: btn.dataset.label,
+        yes_means: btn.dataset.inverted === '1' ? 'inverted' : 'same',
+      }),
+    });
+    btn.textContent = r.skipped ? 'Already in registry' : 'Added ✓';
+    btn.classList.add('bg-emerald-800');
+    refreshScan();   // pull fresh scan that includes the new pair
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Add to registry';
+    alert(`add failed: ${e.message}`);
+  }
+}
+
+function rejectCandidate(btn) {
+  rejectedKeys.add(btn.dataset.key);
+  saveRejected();
+  refreshDiscovery();
+}
+
 // ---- tab nav -------------------------------------------------------------
 
 function activateTab(name) {
@@ -521,7 +715,9 @@ function activateTab(name) {
   document.getElementById('tab-opps').classList.toggle('hidden', name !== 'opps');
   document.getElementById('tab-pos').classList.toggle('hidden', name !== 'pos');
   document.getElementById('tab-all').classList.toggle('hidden', name !== 'all');
+  document.getElementById('tab-discover').classList.toggle('hidden', name !== 'discover');
   if (name === 'pos') refreshPositions();
+  if (name === 'discover') { refreshDiscovery(); refreshDiscoveryStatus(); }
 }
 document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
 
@@ -559,6 +755,11 @@ document.getElementById('testNtfyBtn').addEventListener('click', async () => {
 
 document.getElementById('modalQuoteBtn').addEventListener('click', () => doQuote(false));
 document.getElementById('modalConfirmBtn').addEventListener('click', doExecute);
+
+document.getElementById('discoverRunBtn').addEventListener('click', () => startDiscovery(true));
+document.getElementById('discoverRunNoLlmBtn').addEventListener('click', () => startDiscovery(false));
+document.getElementById('filterMatchesOnly').addEventListener('change', refreshDiscovery);
+document.getElementById('filterMinConf').addEventListener('change', refreshDiscovery);
 
 (async function init() {
   loadSettings();

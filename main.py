@@ -54,6 +54,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import discovery
 import scanner
 from arb_executor import execute_arb
 from kalshi_client import KalshiClient, KalshiError, KalshiNotConfigured
@@ -515,6 +516,144 @@ def api_debug_poly(_: str = Depends(require_auth)):
                 "traceback": traceback.format_exc(),
             }
     return out
+
+
+# ---- /api/discovery/* -----------------------------------------------------
+
+_DISCOVERY_STATE: dict[str, Any] = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "last_summary": None,
+    "error": None,
+}
+_DISCOVERY_LOCK = threading.Lock()
+
+
+def _discovery_worker(do_llm: bool):
+    with _DISCOVERY_LOCK:
+        if _DISCOVERY_STATE["running"]:
+            return
+        _DISCOVERY_STATE["running"] = True
+        _DISCOVERY_STATE["started_at"] = datetime.utcnow().isoformat() + "Z"
+        _DISCOVERY_STATE["error"] = None
+    try:
+        summary = discovery.run_discovery(do_llm=do_llm)
+        _DISCOVERY_STATE["last_summary"] = {
+            "fetched_at": summary["fetched_at"],
+            "elapsed_sec": summary["elapsed_sec"],
+            "kalshi_count": summary["kalshi_count"],
+            "poly_count": summary["poly_count"],
+            "candidate_count": summary["candidate_count"],
+            "match_count": summary["match_count"],
+        }
+    except Exception as e:
+        log.exception("discovery worker failed")
+        _DISCOVERY_STATE["error"] = f"{type(e).__name__}: {e}"
+    finally:
+        _DISCOVERY_STATE["finished_at"] = datetime.utcnow().isoformat() + "Z"
+        _DISCOVERY_STATE["running"] = False
+
+
+@app.post("/api/discovery/run")
+def api_discovery_run(do_llm: bool = True, _: str = Depends(require_auth)):
+    """Kick off a discovery run in a background thread. Returns
+    immediately. Poll /api/discovery/status to track progress.
+    """
+    if _DISCOVERY_STATE["running"]:
+        return {"ok": False, "reason": "already running",
+                "started_at": _DISCOVERY_STATE["started_at"]}
+    t = threading.Thread(
+        target=_discovery_worker, kwargs={"do_llm": do_llm},
+        daemon=True, name="discovery",
+    )
+    t.start()
+    return {"ok": True, "started_at": datetime.utcnow().isoformat() + "Z",
+            "do_llm": do_llm}
+
+
+@app.get("/api/discovery/status")
+def api_discovery_status(_: str = Depends(require_auth)):
+    return {
+        "running": _DISCOVERY_STATE["running"],
+        "started_at": _DISCOVERY_STATE["started_at"],
+        "finished_at": _DISCOVERY_STATE["finished_at"],
+        "last_summary": _DISCOVERY_STATE["last_summary"],
+        "error": _DISCOVERY_STATE["error"],
+        "anthropic_configured": bool(os.getenv("ANTHROPIC_API_KEY", "").strip()),
+    }
+
+
+@app.get("/api/discovery/candidates")
+def api_discovery_candidates(
+    limit: int = 200,
+    min_confidence: int = 0,
+    matches_only: bool = False,
+    _: str = Depends(require_auth),
+):
+    """Return cached candidates, optionally filtered.
+
+    matches_only=true keeps only candidates the LLM flagged as match=true.
+    min_confidence filters by llm_confidence (0-100).
+    """
+    cached = discovery.load_cached()
+    candidates = cached.get("candidates") or []
+    if matches_only:
+        candidates = [c for c in candidates if c.get("llm_match")]
+    if min_confidence > 0:
+        candidates = [c for c in candidates if (c.get("llm_confidence") or 0) >= min_confidence]
+    return {
+        "fetched_at": cached.get("fetched_at"),
+        "total": len(cached.get("candidates") or []),
+        "shown": min(len(candidates), limit),
+        "candidates": candidates[:limit],
+    }
+
+
+class PromoteBody(BaseModel):
+    poly_slug: str
+    kalshi_ticker: str
+    label: str | None = None
+    yes_means: str = Field(default="same", pattern="^(same|inverted)$")
+
+
+@app.post("/api/discovery/promote")
+def api_discovery_promote(body: PromoteBody, _: str = Depends(require_auth)):
+    """Append a candidate pair to markets.yaml so the scanner picks it up.
+
+    Idempotent: skips if a pair with the same kalshi_ticker +
+    polymarket_us_slug already exists.
+    """
+    import yaml as _yaml
+    path = Path(os.getenv("MARKETS_REGISTRY_PATH", "markets.yaml"))
+    try:
+        raw = _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        raw = {}
+    pairs = raw.get("pairs") or []
+    for p in pairs:
+        if (p.get("kalshi_ticker") == body.kalshi_ticker
+                and p.get("polymarket_us_slug") == body.poly_slug):
+            return {"ok": True, "skipped": True, "reason": "already present"}
+    # Derive a stable key from the kalshi ticker (lower + hyphens).
+    derived_key = re.sub(r"[^a-z0-9]+", "-",
+                         body.kalshi_ticker.lower()).strip("-")[:48] or "pair"
+    new_pair = {
+        "key": derived_key,
+        "label": body.label or body.kalshi_ticker,
+        "kalshi_ticker": body.kalshi_ticker,
+        "polymarket_us_slug": body.poly_slug,
+        "yes_means": body.yes_means,
+        "enabled": True,
+    }
+    pairs.append(new_pair)
+    raw["pairs"] = pairs
+    path.write_text(_yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    return {"ok": True, "skipped": False, "added": new_pair}
+
+
+# `re` is imported at module top via the FastAPI imports above? Make sure:
+import re  # noqa: E402,F811
 
 
 # ---- /api/arb/recommend ---------------------------------------------------
