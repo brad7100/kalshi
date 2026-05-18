@@ -182,8 +182,11 @@ def _kalshi_event_ticker_for(market_ticker: str) -> str:
 # Module-level cache + throttle for Kalshi reads. ALL run_scan callers
 # share this — /api/scan, the ntfy background loop, and /api/arb/recommend
 # don't stampede when called within the TTL.
-_KALSHI_CACHE_TTL_SEC = float(os.getenv("KALSHI_EVENT_CACHE_TTL_SEC", "15"))
-_KALSHI_INTER_CALL_DELAY_SEC = float(os.getenv("KALSHI_INTER_CALL_DELAY_SEC", "0.25"))
+# Kalshi rate-limits unauthenticated reads aggressively. The cache TTL is
+# the single most-impactful knob: at 60s, a healthy registry only needs
+# ~7 cold fetches per minute (one per event), well under any limit.
+_KALSHI_CACHE_TTL_SEC = float(os.getenv("KALSHI_EVENT_CACHE_TTL_SEC", "60"))
+_KALSHI_INTER_CALL_DELAY_SEC = float(os.getenv("KALSHI_INTER_CALL_DELAY_SEC", "0.5"))
 _kalshi_event_cache: dict[str, tuple[float, dict[str, dict]]] = {}
 import threading as _threading
 _kalshi_cache_lock = _threading.Lock()

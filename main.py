@@ -78,7 +78,7 @@ NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 NTFY_ARB_SPREAD_C = float(os.getenv("NTFY_ARB_SPREAD_C", "1.0"))
 NTFY_COOLDOWN_SEC = int(os.getenv("NTFY_COOLDOWN_SEC", "300"))
-NTFY_INTERVAL_SEC = int(os.getenv("NTFY_INTERVAL_SEC", "30"))
+NTFY_INTERVAL_SEC = int(os.getenv("NTFY_INTERVAL_SEC", "60"))
 
 # Background discovery scheduler. Off by default — set
 # DISCOVERY_INTERVAL_HOURS=6 to refresh candidates every 6 hours, and
