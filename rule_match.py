@@ -294,7 +294,8 @@ class PairMatch:
     yes_means: str
     kalshi_outcome: str   # for telemetry/logging
     poly_outcome: str
-    matched_by: str       # 'team-code' or 'player-name'
+    matched_by: str       # 'team-code' / 'player-name' / 'daily-game'
+    polymarket_venue: str = "us"
 
 
 def _team_code_from_kalshi(ticker: str, event_ticker: str) -> str:
@@ -399,4 +400,206 @@ def run_rule_match(client: PolymarketUSClient | None = None) -> list[PairMatch]:
                  rule.key, len(kalshi_ms), len(poly_ms), len(these))
         matches.extend(these)
         time.sleep(0.25)
+    # Daily-game series live on polymarket.com (international Gamma API),
+    # not on api.polymarket.us. Run the daily matchers in addition.
+    matches.extend(match_daily_games())
+    return matches
+
+
+# ---- daily game matching (Kalshi *GAME-* events <-> Polymarket aec-* slugs)
+#
+# Daily moneyline games on both venues. Kalshi event ticker shape:
+#     KX{LEAGUE}GAME-{YY}{MMM}{DD}{HHMM?}{AWAY}{HOME}
+#     example: KXMLBGAME-26MAY211315PITSTL  (PIT @ STL, May 21 2026)
+#              KXNHLGAME-26MAY20VGKCOL      (VGK @ COL)
+#              KXNBAGAME-26MAY24OKCSAS      (OKC @ SAS)
+#
+# Polymarket US (yes — same site, just via events.list(closed=False) which
+# my earlier markets.list() filter missed) slug shape:
+#     aec-{league}-{away}-{home}-{YYYY}-{MM}-{DD}
+#     example: aec-nhl-veg-col-2026-05-20   (Vegas at Colorado)
+#              aec-nba-sa-okc-2026-05-20
+#
+# Both venues use AWAY-HOME ordering in their identifier. The team codes
+# mostly match by lowercase (BOS=bos), with a small alias table for
+# divergences (Kalshi VGK = Polymarket veg, MTL = mon, etc.).
+
+_KALSHI_GAME_RE = re.compile(
+    r"^KX([A-Z]+)GAME-(\d{2})([A-Z]{3})(\d{2})(\d{0,4})([A-Z]{2,3})([A-Z]{2,3})$"
+)
+_POLY_GAME_RE = re.compile(
+    r"^aec-([a-z]+)-([a-z]{2,4})-([a-z]{2,4})-(\d{4})-(\d{2})-(\d{2})$"
+)
+
+# Kalshi -> Polymarket team-code aliases. Mostly identity-lowercase.
+_TEAM_ALIAS = {
+    # MLB
+    "ATH": "ath", "AZ": "ari", "ARI": "ari", "WSH": "wsh",
+    "TBR": "tb", "TB": "tb", "SDP": "sd", "SD": "sd",
+    "SFG": "sf", "SF": "sf", "KCR": "kc", "KC": "kc",
+    "CHC": "chc", "CWS": "cws", "NYM": "nym", "NYY": "nyy",
+    "LAA": "laa", "LAD": "lad",
+    # NHL
+    "VGK": "veg", "MTL": "mon", "NJD": "nj", "TBL": "tb",
+    "LAK": "la", "SJS": "sj",
+    # NBA
+    "NYK": "ny", "NOP": "no", "GSW": "gsw", "LAL": "lal",
+    "LAC": "lac", "SAS": "sa", "OKC": "okc",
+}
+_MONTHS = {"JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,
+           "JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12}
+
+
+def _kalshi_to_poly_team(code: str) -> str:
+    return _TEAM_ALIAS.get(code.upper(), code.lower())
+
+
+def _fetch_kalshi_games() -> list[dict]:
+    """Pull every open Kalshi event whose ticker matches the
+    `KX{LEAGUE}GAME-...` daily-game shape. Per event, also pull the
+    market list so we know the per-team market tickers."""
+    import urllib.parse
+    events: list[dict] = []
+    cursor = None
+    for _ in range(30):
+        p = {"limit": 200, "status": "open"}
+        if cursor:
+            p["cursor"] = cursor
+        try:
+            res = _kget(f"/events?{urllib.parse.urlencode(p)}")
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                time.sleep(2)
+                continue
+            log.warning("kalshi /events err: %s", e)
+            break
+        evs = res.get("events", [])
+        if not evs:
+            break
+        events.extend(evs)
+        cursor = res.get("cursor")
+        if not cursor:
+            break
+        time.sleep(0.3)
+    rows = []
+    for ev in events:
+        et = ev.get("event_ticker", "")
+        m = _KALSHI_GAME_RE.match(et)
+        if not m:
+            continue
+        league, yy, mon, dd, hhmm, away, home = m.groups()
+        try:
+            year = 2000 + int(yy)
+            month = _MONTHS[mon]
+            day = int(dd)
+        except (ValueError, KeyError):
+            continue
+        markets = _fetch_kalshi_event_markets(et)
+        if not markets:
+            continue
+        rows.append({
+            "event_ticker": et,
+            "league": league.lower(),     # MLB / NHL / NBA / NFL / etc.
+            "away": away.upper(),
+            "home": home.upper(),
+            "year": year, "month": month, "day": day,
+            "markets": markets,
+        })
+        time.sleep(0.2)
+    return rows
+
+
+def _fetch_poly_moneyline_events(client) -> list[dict]:
+    """Pull every OPEN moneyline event from Polymarket US (events.list,
+    not markets.list — that's the bug I had earlier)."""
+    out = []
+    cursor = None
+    for _ in range(20):
+        params = {"limit": 200, "closed": False}
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            r = client._client.events.list(params)
+        except PolymarketUSError as e:
+            log.warning("polymarket events.list err: %s", e)
+            break
+        evs = r.get("events", [])
+        if not evs:
+            break
+        for e in evs:
+            for m in (e.get("markets") or []):
+                if m.get("marketType") == "moneyline":
+                    out.append({"event": e, "market": m})
+        cursor = r.get("nextCursor")
+        if not cursor or r.get("eof"):
+            break
+    return out
+
+
+def match_daily_games() -> list[PairMatch]:
+    """Match today's (and upcoming) Kalshi daily-game events to the
+    corresponding Polymarket US moneyline markets. Pairs use the
+    polymarket_venue='us' default — execution goes through the existing
+    SDK."""
+    matches: list[PairMatch] = []
+    try:
+        pc = PolymarketUSClient()
+        poly_pool = _fetch_poly_moneyline_events(pc)
+    except Exception as e:
+        log.warning("daily-game polymarket pull failed: %s", e)
+        return matches
+    # Index poly by (league, away, home, date_iso)
+    poly_idx: dict[tuple, dict] = {}
+    for entry in poly_pool:
+        slug = (entry["market"] or {}).get("slug", "")
+        mm = _POLY_GAME_RE.match(slug)
+        if not mm:
+            continue
+        league, away, home, yr, mo, day = mm.groups()
+        poly_idx[(league, away, home, f"{yr}-{mo}-{day}")] = entry
+    log.info("daily-game: %d open Polymarket moneyline markets indexed", len(poly_idx))
+
+    try:
+        kalshi_games = _fetch_kalshi_games()
+    except Exception as e:
+        log.warning("daily-game kalshi pull failed: %s", e)
+        return matches
+    log.info("daily-game: %d Kalshi daily-game events", len(kalshi_games))
+
+    for game in kalshi_games:
+        date_iso = f"{game['year']:04d}-{game['month']:02d}-{game['day']:02d}"
+        away_poly = _kalshi_to_poly_team(game["away"])
+        home_poly = _kalshi_to_poly_team(game["home"])
+        league = game["league"]
+        # Polymarket league codes: nba / nhl / mlb / nfl / wnba — match
+        # Kalshi 'MLB' -> 'mlb', 'NHL' -> 'nhl', etc.
+        entry = poly_idx.get((league, away_poly, home_poly, date_iso))
+        if not entry:
+            continue
+        pm = entry["market"]
+        ev = entry["event"]
+        # Pair on the AWAY team's Kalshi market — Polymarket's outcome[0]
+        # is the away team (first in the slug), so yes_means='same'.
+        away_ticker = None
+        for m in game["markets"]:
+            t = m.get("ticker", "")
+            if t.endswith("-" + game["away"]):
+                away_ticker = t
+                break
+        if not away_ticker:
+            continue
+        title = (pm.get("question") or ev.get("title")
+                 or f"{game['away']} vs {game['home']} ({date_iso})")
+        matches.append(PairMatch(
+            series_key=f"{league}_game_{date_iso}",
+            label=f"{league.upper()} {date_iso} — {title}",
+            kalshi_ticker=away_ticker,
+            polymarket_us_slug=pm.get("slug", ""),
+            yes_means="same",
+            kalshi_outcome=game["away"],
+            poly_outcome=away_poly,
+            matched_by="daily-game",
+            polymarket_venue="us",
+        ))
+    log.info("daily-game: %d pairs matched", len(matches))
     return matches
