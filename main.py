@@ -535,10 +535,36 @@ def api_positions(_: str = Depends(require_auth)):
 class TestPolyOrderBody(BaseModel):
     slug: str
     side: str = Field(pattern="^(yes|no|YES|NO|Yes|No)$")
-    quantity: float = Field(gt=0, le=2)              # cap to 2 shares
+    quantity: float = Field(gt=0, le=4)
     limit_price: float = Field(gt=0.01, lt=1.0)
-    tif: str = Field(default="IOC", pattern="^(IOC|FOK|GTC)$")
-    confirm: str   # must literally equal "YES_TEST" to proceed
+    tif: str = Field(default="IOC", pattern="^(IOC|FAK|FOK|GTC)$")
+    confirm: str
+    venue: str = Field(default="us", pattern="^(us|intl)$")
+    outcome_index: int = Field(default=0, ge=0, le=1)
+
+
+@app.get("/api/debug/intl-trade")
+def api_debug_intl_trade(_: str = Depends(require_auth)):
+    """Show intl trade client config + balance. Diagnostic only."""
+    from polymarket_intl_trade_client import PolymarketIntlTradeClient
+    c = PolymarketIntlTradeClient()
+    out: dict = {
+        "configured": c.configured,
+        "funder_address": c.funder_address or None,
+        "signature_type": c.signature_type,
+        "host": c.host,
+        "init_error": c._init_error,
+    }
+    if c.configured and c._client is not None:
+        try:
+            out["address"] = c.get_address()
+        except Exception as e:
+            out["address_error"] = f"{type(e).__name__}: {e}"
+        try:
+            out["balance"] = c.get_balance()
+        except Exception as e:
+            out["balance_error"] = f"{type(e).__name__}: {e}"
+    return out
 
 
 @app.post("/api/debug/place-test-order")
@@ -564,20 +590,41 @@ def api_debug_place_test_order(body: TestPolyOrderBody,
     out: dict = {
         "slug": body.slug, "side": body.side.lower(),
         "quantity": body.quantity, "limit_price": body.limit_price,
-        "tif": body.tif, "approx_notional_usd": round(notional, 4),
+        "tif": body.tif, "venue": body.venue,
+        "approx_notional_usd": round(notional, 4),
     }
     try:
-        resp = poly.place_order(
-            slug=body.slug,
-            side=body.side.lower(),
-            action="buy",
-            quantity=body.quantity,
-            limit_price=body.limit_price,
-            tif=body.tif,
-            order_type="limit",
-        )
-        out["status"] = "ok"
-        out["sdk_response"] = resp
+        if body.venue == "intl":
+            from polymarket_intl_trade_client import PolymarketIntlTradeClient
+            c = PolymarketIntlTradeClient()
+            if not c.configured:
+                out["status"] = "error"
+                out["error_type"] = "NotConfigured"
+                out["error_msg"] = "POLYMARKET_INTL_PRIVATE_KEY / FUNDER_ADDRESS missing"
+                return out
+            out["funder_address"] = c.funder_address
+            resp = c.place_order(
+                slug=body.slug,
+                outcome_index=body.outcome_index,
+                side="BUY",
+                size=body.quantity,
+                price=body.limit_price,
+                tif="FAK" if body.tif.upper() in ("IOC", "FAK") else body.tif.upper(),
+            )
+            out["status"] = "ok"
+            out["sdk_response"] = resp
+        else:
+            resp = poly.place_order(
+                slug=body.slug,
+                side=body.side.lower(),
+                action="buy",
+                quantity=body.quantity,
+                limit_price=body.limit_price,
+                tif=body.tif,
+                order_type="limit",
+            )
+            out["status"] = "ok"
+            out["sdk_response"] = resp
     except Exception as e:
         out["status"] = "error"
         out["error_type"] = type(e).__name__

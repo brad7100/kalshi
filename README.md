@@ -116,6 +116,10 @@ restarting the server.
 | `KALSHI_PRIVATE_KEY` | for trading + positions | Full PEM contents. Newlines can be literal `\n`. |
 | `POLYMARKET_US_KEY_ID` | for trading + positions | UUID from polymarket.us/developer (requires completed KYC via the Polymarket US iOS app first) |
 | `POLYMARKET_US_SECRET_KEY` | for trading + positions | Base64-encoded 32-byte Ed25519 private key |
+| `POLYMARKET_INTL_PRIVATE_KEY` | for intl auto-execute | Polygon EOA private key (hex, 0x prefix OK). For mobile-app users this is the EOA inside the app, not the proxy address. |
+| `POLYMARKET_INTL_FUNDER_ADDRESS` | for intl auto-execute | The Polymarket proxy wallet address that holds your USDC (the address shown in the app's deposit screen). |
+| `POLYMARKET_INTL_SIGNATURE_TYPE` | no | 0 = EOA, 1 = POLY_PROXY (Magic email login), 2 = POLY_GNOSIS_SAFE (mobile app). Default 2. |
+| `POLYMARKET_INTL_HOST` | no | CLOB endpoint. Default `https://clob.polymarket.com`. |
 | `DRY_RUN` | no | `true` (default) stubs orders; `false` = real two-leg execution |
 | `MAX_ORDER_USD` | no | Per-execution combined-notional cap (both legs summed). Default 50. |
 | `MARKETS_REGISTRY_PATH` | no | Default `./markets.yaml`. |
