@@ -498,3 +498,115 @@ pairs:
   polymarket_us_slug: aec-nhl-veg-col-2026-05-20
   yes_means: same
   enabled: true
+- key: kxmlbgame-26may201305cinphi-cin
+  label: "MLB 2026-05-20 \u2014 Cincinnati Reds vs. Philadelphia Phillies"
+  kalshi_ticker: KXMLBGAME-26MAY201305CINPHI-CIN
+  polymarket_us_slug: mlb-cin-phi-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may201310baltb-bal
+  label: "MLB 2026-05-20 \u2014 Baltimore Orioles vs. Tampa Bay Rays"
+  kalshi_ticker: KXMLBGAME-26MAY201310BALTB-BAL
+  polymarket_us_slug: mlb-bal-tb-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may201340houmin-hou
+  label: "MLB 2026-05-20 \u2014 Houston Astros vs. Minnesota Twins"
+  kalshi_ticker: KXMLBGAME-26MAY201340HOUMIN-HOU
+  polymarket_us_slug: mlb-hou-min-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may201510texcol-tex
+  label: "MLB 2026-05-20 \u2014 Texas Rangers vs. Colorado Rockies"
+  kalshi_ticker: KXMLBGAME-26MAY201510TEXCOL-TEX
+  polymarket_us_slug: mlb-tex-col-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may201540sfaz-sf
+  label: "MLB 2026-05-20 \u2014 San Francisco Giants vs. Arizona Diamondbacks"
+  kalshi_ticker: KXMLBGAME-26MAY201540SFAZ-SF
+  polymarket_us_slug: mlb-sf-ari-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may201610cwssea-cws
+  label: "MLB 2026-05-20 \u2014 Chicago White Sox vs. Seattle Mariners"
+  kalshi_ticker: KXMLBGAME-26MAY201610CWSSEA-CWS
+  polymarket_us_slug: mlb-cws-sea-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may201840cledet-cle
+  label: "MLB 2026-05-20 \u2014 Cleveland Guardians vs. Detroit Tigers"
+  kalshi_ticker: KXMLBGAME-26MAY201840CLEDET-CLE
+  polymarket_us_slug: mlb-cle-det-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may201840atlmia-atl
+  label: "MLB 2026-05-20 \u2014 Atlanta Braves vs. Miami Marlins"
+  kalshi_ticker: KXMLBGAME-26MAY201840ATLMIA-ATL
+  polymarket_us_slug: mlb-atl-mia-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may201845nymwsh-nym
+  label: "MLB 2026-05-20 \u2014 New York Mets vs. Washington Nationals"
+  kalshi_ticker: KXMLBGAME-26MAY201845NYMWSH-NYM
+  polymarket_us_slug: mlb-nym-wsh-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may201905tornyy-tor
+  label: "MLB 2026-05-20 \u2014 Toronto Blue Jays vs. New York Yankees"
+  kalshi_ticker: KXMLBGAME-26MAY201905TORNYY-TOR
+  polymarket_us_slug: mlb-tor-nyy-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may201940milchc-mil
+  label: "MLB 2026-05-20 \u2014 Milwaukee Brewers vs. Chicago Cubs"
+  kalshi_ticker: KXMLBGAME-26MAY201940MILCHC-MIL
+  polymarket_us_slug: mlb-mil-chc-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may201940boskc-bos
+  label: "MLB 2026-05-20 \u2014 Boston Red Sox vs. Kansas City Royals"
+  kalshi_ticker: KXMLBGAME-26MAY201940BOSKC-BOS
+  polymarket_us_slug: mlb-bos-kc-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may201945pitstl-pit
+  label: "MLB 2026-05-20 \u2014 Pittsburgh Pirates vs. St. Louis Cardinals"
+  kalshi_ticker: KXMLBGAME-26MAY201945PITSTL-PIT
+  polymarket_us_slug: mlb-pit-stl-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may202040ladsd-lad
+  label: "MLB 2026-05-20 \u2014 Los Angeles Dodgers vs. San Diego Padres"
+  kalshi_ticker: KXMLBGAME-26MAY202040LADSD-LAD
+  polymarket_us_slug: mlb-lad-sd-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may202138athlaa-ath
+  label: "MLB 2026-05-20 \u2014 Athletics vs. Los Angeles Angels"
+  kalshi_ticker: KXMLBGAME-26MAY202138ATHLAA-ATH
+  polymarket_us_slug: mlb-oak-laa-2026-05-20
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true
+- key: kxmlbgame-26may211310cledet-cle
+  label: "MLB 2026-05-21 \u2014 Cleveland Guardians vs. Detroit Tigers"
+  kalshi_ticker: KXMLBGAME-26MAY211310CLEDET-CLE
+  polymarket_us_slug: mlb-cle-det-2026-05-21
+  yes_means: same
+  polymarket_venue: intl
+  enabled: true

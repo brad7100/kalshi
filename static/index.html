@@ -313,17 +313,21 @@ function fmtDays(d) {
 function oppCard(row) {
   const positive = row.locked_spread_cents > 0;
   const ann = row.annualized_return_pct;
+  const isIntl = row.polymarket_venue === 'intl';
   const spreadColor = positive
     ? 'text-emerald-400'
     : (row.locked_spread_cents > -1 ? 'text-amber-400' : 'text-gray-500');
   const ringColor = positive
     ? (ann != null && ann >= 20 ? 'ring-emerald-500' : 'ring-emerald-700')
     : 'ring-gray-700';
+  const intlBadge = isIntl
+    ? '<span class="bg-amber-800 text-amber-100 text-[9px] px-1.5 py-0.5 rounded ml-1">INTL · manual</span>'
+    : '';
   return `
     <div class="bg-gray-800 rounded-lg p-3 ring-1 ${ringColor}">
       <div class="flex items-baseline justify-between mb-2">
         <div class="min-w-0">
-          <div class="text-sm font-semibold truncate">${row.label}</div>
+          <div class="text-sm font-semibold truncate">${row.label}${intlBadge}</div>
           <div class="text-[10px] text-gray-500 num">${row.pair_key} · dir ${row.direction} · resolves ${fmtDays(row.days_to_resolve)}</div>
         </div>
         <div class="text-right shrink-0">

@@ -358,6 +358,34 @@ def execute_arb(opp: dict, contracts: int, *,
         requested_contracts=contracts,
     )
 
+    # Intl-venue pairs: Polymarket leg lives on polymarket.com (Polygon,
+    # USDC, EIP-712 CLOB) — we don't have a trading integration there.
+    # Refuse to auto-execute. Surface a manual-execution payload with
+    # the exact orders for the user to place on each side.
+    if opp.get("polymarket_venue") == "intl":
+        kalshi_price_cents = round(opp["kalshi_leg"]["price"] * 100, 1)
+        poly_price = opp["poly_leg"]["price"]
+        poly_side_label = ("YES (= " + str(opp["poly_leg"].get("outcomes", [""])[0]) + ")"
+                          if "outcomes" in opp["poly_leg"]
+                          else opp["poly_leg"]["side"].upper())
+        result.status = "manual_required"
+        result.notes.append(
+            f"INTL pair — execute manually on BOTH venues. "
+            f"On Kalshi: BUY {opp['kalshi_leg']['side'].upper()} "
+            f"{contracts} contracts of {opp['kalshi_leg']['market_id']} "
+            f"@ {kalshi_price_cents}c. "
+            f"On Polymarket.com: open {opp['poly_leg']['market_id']} and BUY "
+            f"{opp['poly_leg']['side'].upper()} {contracts} shares @ "
+            f"{poly_price:.3f}."
+        )
+        result.notes.append(
+            "Auto-execute is disabled on intl pairs because we don't have "
+            "a Polygon CLOB integration. Place both legs as close in time "
+            "as possible so prices don't move."
+        )
+        result.naked_exposure = None
+        return result
+
     # Fire both legs concurrently.
     k_res, p_res = _fire_both_legs(kc, pc, opp, contracts, dry_run)
     result.kalshi_leg = k_res
