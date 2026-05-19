@@ -31,6 +31,11 @@ from polymarket_us_client import (
     PolymarketUSError,
     PolymarketUSNotConfigured,
 )
+from polymarket_intl_trade_client import (
+    PolymarketIntlTradeClient,
+    PolymarketIntlTradeError,
+)
+import polymarket_intl_client as poly_intl_read
 
 log = logging.getLogger("arb_executor")
 
@@ -169,9 +174,11 @@ def _place_kalshi(kc: KalshiClient, leg: dict, contracts: int,
 def _place_poly(pc: PolymarketUSClient, leg: dict, contracts: int,
                 tif: str = "IOC",
                 action: str = "buy",
-                dry_run: bool = True) -> LegResult:
+                dry_run: bool = True,
+                intl: PolymarketIntlTradeClient | None = None) -> LegResult:
+    venue_name = "polymarket_intl" if intl is not None else "polymarket_us"
     res = LegResult(
-        venue="polymarket_us",
+        venue=venue_name,
         market_id=leg["market_id"],
         side=leg["side"],
         action=action,
@@ -182,11 +189,53 @@ def _place_poly(pc: PolymarketUSClient, leg: dict, contracts: int,
         res.filled_qty = float(contracts)
         res.avg_fill_price = float(leg["price"])
         log.info(
-            "[DRY_RUN] polymarket: would place %s %s %s shares @ %.4f tif=%s",
-            action.upper(), leg["side"], contracts, leg["price"], tif
+            "[DRY_RUN] %s: would place %s %s %s shares @ %.4f tif=%s",
+            venue_name, action.upper(), leg["side"], contracts, leg["price"], tif
         )
         res.raw = {"dry_run": True, "limit_price": leg["price"], "tif": tif, "action": action}
         return res
+
+    # Intl-venue path: Polymarket.com via py-clob-client
+    if intl is not None:
+        # Determine outcome_index from the side flag: our convention is
+        # that leg["side"] = "yes" means outcomes[0] (the pair's primary
+        # side as registered) and "no" means outcomes[1]. The scanner
+        # already accounts for yes_means inversion when computing legs.
+        outcome_index = 0 if leg["side"].lower() == "yes" else 1
+        try:
+            resp = intl.place_order(
+                slug=leg["market_id"],
+                outcome_index=outcome_index,
+                side=action.upper(),
+                size=float(contracts),
+                price=float(leg["price"]),
+                tif="FAK" if tif.upper() in ("IOC", "FAK") else tif.upper(),
+            )
+        except (PolymarketIntlTradeError, Exception) as e:
+            res.status = "rejected"
+            res.error = f"{type(e).__name__}: {e}"
+            return res
+        raw = (resp or {}).get("raw") or {}
+        res.raw = raw
+        res.order_id = raw.get("orderID") or raw.get("orderId") or raw.get("id")
+        # Polymarket CLOB returns a 'success' bool plus 'makingAmount' etc.
+        # For FAK orders, an unfilled order returns success=False with
+        # errorMsg explaining why; a filled order returns the trade details.
+        if isinstance(raw, dict) and raw.get("success"):
+            # Filled (fully or partially). Try to read size + avg price
+            # from the response.
+            taking = float(raw.get("takingAmount") or 0)  # amount taken from book
+            making = float(raw.get("makingAmount") or 0)
+            # For BUY, takingAmount is shares received, makingAmount is USDC spent.
+            res.filled_qty = taking if taking > 0 else float(contracts)
+            res.avg_fill_price = (making / taking) if taking > 0 else float(leg["price"])
+            res.status = "filled" if res.filled_qty >= contracts else "partial"
+        else:
+            res.status = "rejected"
+            res.error = (raw.get("errorMsg") if isinstance(raw, dict) else None) or str(raw)[:200]
+        return res
+
+    # .us venue path (existing)
     if not pc.configured:
         res.status = "rejected"
         res.error = "Polymarket US not configured"
@@ -229,10 +278,12 @@ def _place_poly(pc: PolymarketUSClient, leg: dict, contracts: int,
 
 def _fire_both_legs(kc: KalshiClient, pc: PolymarketUSClient,
                     opp: dict, contracts: int,
-                    dry_run: bool) -> tuple[LegResult, LegResult]:
+                    dry_run: bool,
+                    intl: PolymarketIntlTradeClient | None = None,
+                    ) -> tuple[LegResult, LegResult]:
     """Fire both legs concurrently via threads. Return (kalshi_result,
     poly_result). Threads are used (not asyncio) because both SDKs are
-    sync."""
+    sync. Pass intl to route the Polymarket leg through polymarket.com."""
     results: dict[str, LegResult] = {}
 
     def _k():
@@ -241,7 +292,7 @@ def _fire_both_legs(kc: KalshiClient, pc: PolymarketUSClient,
 
     def _p():
         results["p"] = _place_poly(pc, opp["poly_leg"], contracts,
-                                   dry_run=dry_run)
+                                   dry_run=dry_run, intl=intl)
 
     tk = threading.Thread(target=_k, daemon=True)
     tp = threading.Thread(target=_p, daemon=True)
@@ -284,7 +335,12 @@ def _hedge_imbalance(kc: KalshiClient, pc: PolymarketUSClient,
         **target_leg,
         "price": max_price,
     }
-    return _place_poly(pc, hedge_leg, int(short_poly), dry_run=dry_run)
+    intl_h = None
+    if opp.get("polymarket_venue") == "intl":
+        intl_h = PolymarketIntlTradeClient()
+        if not intl_h.configured:
+            intl_h = None
+    return _place_poly(pc, hedge_leg, int(short_poly), dry_run=dry_run, intl=intl_h)
 
 
 def _unwind_overfilled_leg(kc: KalshiClient, pc: PolymarketUSClient,
@@ -332,8 +388,13 @@ def _unwind_overfilled_leg(kc: KalshiClient, pc: PolymarketUSClient,
         "Hedge failed — unwinding %s extra Polymarket %s shares at %.4f bid",
         int(over_poly), target["side"], bid
     )
+    intl_u = None
+    if opp.get("polymarket_venue") == "intl":
+        intl_u = PolymarketIntlTradeClient()
+        if not intl_u.configured:
+            intl_u = None
     return _place_poly(pc, sell_leg, int(over_poly),
-                       action="sell", dry_run=dry_run)
+                       action="sell", dry_run=dry_run, intl=intl_u)
 
 
 # ---- public entry --------------------------------------------------------
@@ -358,36 +419,31 @@ def execute_arb(opp: dict, contracts: int, *,
         requested_contracts=contracts,
     )
 
-    # Intl-venue pairs: Polymarket leg lives on polymarket.com (Polygon,
-    # USDC, EIP-712 CLOB) — we don't have a trading integration there.
-    # Refuse to auto-execute. Surface a manual-execution payload with
-    # the exact orders for the user to place on each side.
+    # Intl-venue pairs: Polymarket leg lives on polymarket.com (Polygon
+    # CLOB). If the intl trade client is configured, fire normally via
+    # the intl client. If not, surface a manual-execution payload.
+    intl = None
     if opp.get("polymarket_venue") == "intl":
-        kalshi_price_cents = round(opp["kalshi_leg"]["price"] * 100, 1)
-        poly_price = opp["poly_leg"]["price"]
-        poly_side_label = ("YES (= " + str(opp["poly_leg"].get("outcomes", [""])[0]) + ")"
-                          if "outcomes" in opp["poly_leg"]
-                          else opp["poly_leg"]["side"].upper())
-        result.status = "manual_required"
-        result.notes.append(
-            f"INTL pair — execute manually on BOTH venues. "
-            f"On Kalshi: BUY {opp['kalshi_leg']['side'].upper()} "
-            f"{contracts} contracts of {opp['kalshi_leg']['market_id']} "
-            f"@ {kalshi_price_cents}c. "
-            f"On Polymarket.com: open {opp['poly_leg']['market_id']} and BUY "
-            f"{opp['poly_leg']['side'].upper()} {contracts} shares @ "
-            f"{poly_price:.3f}."
-        )
-        result.notes.append(
-            "Auto-execute is disabled on intl pairs because we don't have "
-            "a Polygon CLOB integration. Place both legs as close in time "
-            "as possible so prices don't move."
-        )
-        result.naked_exposure = None
-        return result
+        intl = PolymarketIntlTradeClient()
+        if not intl.configured:
+            kalshi_price_cents = round(opp["kalshi_leg"]["price"] * 100, 1)
+            poly_price = opp["poly_leg"]["price"]
+            result.status = "manual_required"
+            result.notes.append(
+                f"INTL pair — Polymarket trading client not configured. "
+                f"Set POLYMARKET_INTL_PRIVATE_KEY + POLYMARKET_INTL_FUNDER_ADDRESS "
+                f"in Railway env to enable auto-execute. "
+                f"Meanwhile manually: Kalshi BUY {opp['kalshi_leg']['side'].upper()} "
+                f"{contracts} of {opp['kalshi_leg']['market_id']} @ {kalshi_price_cents}c; "
+                f"Polymarket.com BUY {opp['poly_leg']['side'].upper()} {contracts} "
+                f"shares of {opp['poly_leg']['market_id']} @ {poly_price:.3f}."
+            )
+            result.naked_exposure = None
+            return result
 
-    # Fire both legs concurrently.
-    k_res, p_res = _fire_both_legs(kc, pc, opp, contracts, dry_run)
+    # Fire both legs concurrently. Pass intl client so _place_poly can
+    # branch on it instead of using the .us SDK.
+    k_res, p_res = _fire_both_legs(kc, pc, opp, contracts, dry_run, intl=intl)
     result.kalshi_leg = k_res
     result.poly_leg = p_res
 
