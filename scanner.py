@@ -60,8 +60,14 @@ class PairConfig:
     label: str
     kalshi_ticker: str
     polymarket_us_slug: str
-    yes_means: str = "same"  # "same" or "inverted"
+    yes_means: str = "same"   # "same" or "inverted"
     enabled: bool = True
+    # "us"  -> read prices via the polymarket-us SDK (CFTC venue)
+    # "intl"-> read prices via Gamma API (polymarket.com, on-chain)
+    # Intl pairs are read-only on Polymarket side: the executor will only
+    # place the Kalshi leg and surface a manual-action note for the
+    # Polymarket leg.
+    polymarket_venue: str = "us"
 
 
 def load_registry(path: str | None = None) -> list[PairConfig]:
@@ -82,12 +88,17 @@ def load_registry(path: str | None = None) -> list[PairConfig]:
                 polymarket_us_slug=str(entry["polymarket_us_slug"]),
                 yes_means=str(entry.get("yes_means", "same")).lower(),
                 enabled=bool(entry.get("enabled", True)),
+                polymarket_venue=str(entry.get("polymarket_venue", "us")).lower(),
             )
         except KeyError as e:
             raise ValueError(f"markets.yaml pair missing field {e}") from e
         if cfg.yes_means not in ("same", "inverted"):
             raise ValueError(
                 f"markets.yaml pair {cfg.key}: yes_means must be 'same' or 'inverted'"
+            )
+        if cfg.polymarket_venue not in ("us", "intl"):
+            raise ValueError(
+                f"markets.yaml pair {cfg.key}: polymarket_venue must be 'us' or 'intl'"
             )
         out.append(cfg)
     return out
@@ -505,10 +516,14 @@ def run_scan(contracts: int = 100, min_spread_cents: float = 0.0,
             # (settled / not yet open). Note it once.
             errors.append(f"kalshi {cfg.key} ({cfg.kalshi_ticker}): not in event response")
         try:
-            poly_raw = poly.get_quote(cfg.polymarket_us_slug)
+            if cfg.polymarket_venue == "intl":
+                import polymarket_intl_client as pi
+                poly_raw = pi.get_quote(cfg.polymarket_us_slug)
+            else:
+                poly_raw = poly.get_quote(cfg.polymarket_us_slug)
             poly_q = parse_poly_quote(poly_raw, inverted=(cfg.yes_means == "inverted"))
-        except PolymarketUSError as e:
-            errors.append(f"polymarket {cfg.key} ({cfg.polymarket_us_slug}): {e}")
+        except (PolymarketUSError, Exception) as e:
+            errors.append(f"polymarket {cfg.key} ({cfg.polymarket_us_slug}): {type(e).__name__}: {e}")
 
         # Resolve `end_date` — use the earlier of the two venues' dates
         # (capital is locked until BOTH legs resolve). Poly metadata is

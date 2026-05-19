@@ -437,3 +437,64 @@ pairs:
   polymarket_us_slug: tec-mlb-nlchamp-2026-09-27-atl
   yes_means: same
   enabled: true
+- key: kxnbagame-26may25nykcle-nyk
+  label: "NBA 2026-05-25 \u2014 New York vs. Cleveland"
+  kalshi_ticker: KXNBAGAME-26MAY25NYKCLE-NYK
+  polymarket_us_slug: aec-nba-ny-cle-2026-05-25
+  yes_means: same
+  enabled: true
+- key: kxnhlgame-26may24colvgk-col
+  label: "NHL 2026-05-24 \u2014 Colorado Avalanche vs. Vegas Golden Knights"
+  kalshi_ticker: KXNHLGAME-26MAY24COLVGK-COL
+  polymarket_us_slug: aec-nhl-col-veg-2026-05-24
+  yes_means: same
+  enabled: true
+- key: kxnbagame-26may24okcsas-okc
+  label: "NBA 2026-05-24 \u2014 Oklahoma City vs. San Antonio"
+  kalshi_ticker: KXNBAGAME-26MAY24OKCSAS-OKC
+  polymarket_us_slug: aec-nba-okc-sa-2026-05-24
+  yes_means: same
+  enabled: true
+- key: kxnbagame-26may23nykcle-nyk
+  label: "NBA 2026-05-23 \u2014 New York vs. Cleveland"
+  kalshi_ticker: KXNBAGAME-26MAY23NYKCLE-NYK
+  polymarket_us_slug: aec-nba-ny-cle-2026-05-23
+  yes_means: same
+  enabled: true
+- key: kxnbagame-26may22okcsas-okc
+  label: "NBA 2026-05-22 \u2014 Oklahoma City vs. San Antonio"
+  kalshi_ticker: KXNBAGAME-26MAY22OKCSAS-OKC
+  polymarket_us_slug: aec-nba-okc-sa-2026-05-22
+  yes_means: same
+  enabled: true
+- key: kxnhlgame-26may22vgkcol-vgk
+  label: "NHL 2026-05-22 \u2014 Vegas Golden Knights vs. Colorado Avalanche"
+  kalshi_ticker: KXNHLGAME-26MAY22VGKCOL-VGK
+  polymarket_us_slug: aec-nhl-veg-col-2026-05-22
+  yes_means: same
+  enabled: true
+- key: kxnbagame-26may21clenyk-cle
+  label: "NBA 2026-05-21 \u2014 Cleveland vs. New York"
+  kalshi_ticker: KXNBAGAME-26MAY21CLENYK-CLE
+  polymarket_us_slug: aec-nba-cle-ny-2026-05-21
+  yes_means: same
+  enabled: true
+- key: kxwnbagame-26may20dalchi-dal
+  label: "WNBA 2026-05-20 \u2014 Who will win in the upcoming basketball event Dallas\
+    \ vs Chicago scheduled for 2026-05-21 01:00:00+00?"
+  kalshi_ticker: KXWNBAGAME-26MAY20DALCHI-DAL
+  polymarket_us_slug: aec-wnba-dal-chi-2026-05-20
+  yes_means: same
+  enabled: true
+- key: kxnbagame-26may20sasokc-sas
+  label: "NBA 2026-05-20 \u2014 San Antonio vs. Oklahoma City"
+  kalshi_ticker: KXNBAGAME-26MAY20SASOKC-SAS
+  polymarket_us_slug: aec-nba-sa-okc-2026-05-20
+  yes_means: same
+  enabled: true
+- key: kxnhlgame-26may20vgkcol-vgk
+  label: "NHL 2026-05-20 \u2014 Vegas Golden Knights vs. Colorado Avalanche"
+  kalshi_ticker: KXNHLGAME-26MAY20VGKCOL-VGK
+  polymarket_us_slug: aec-nhl-veg-col-2026-05-20
+  yes_means: same
+  enabled: true
