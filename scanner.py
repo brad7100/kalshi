@@ -544,6 +544,7 @@ def run_scan(contracts: int = 100, min_spread_cents: float = 0.0,
         for r in rows:
             r["pair_key"] = cfg.key
             r["label"] = cfg.label
+            r["polymarket_venue"] = cfg.polymarket_venue
             r["kalshi_end_date"] = k_end
             r["poly_end_date"] = p_end
             r["days_to_resolve"] = days_to_resolve
