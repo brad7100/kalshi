@@ -532,6 +532,60 @@ def api_positions(_: str = Depends(require_auth)):
     }
 
 
+class TestPolyOrderBody(BaseModel):
+    slug: str
+    side: str = Field(pattern="^(yes|no|YES|NO|Yes|No)$")
+    quantity: float = Field(gt=0, le=2)              # cap to 2 shares
+    limit_price: float = Field(gt=0.01, lt=1.0)
+    tif: str = Field(default="IOC", pattern="^(IOC|FOK|GTC)$")
+    confirm: str   # must literally equal "YES_TEST" to proceed
+
+
+@app.post("/api/debug/place-test-order")
+def api_debug_place_test_order(body: TestPolyOrderBody,
+                               _: str = Depends(require_auth)):
+    """Diagnostic: place a tiny Polymarket order via the existing
+    api.polymarket.us credentials. Capped at 2 shares, requires
+    `confirm="YES_TEST"`. Defaults to IOC so unfilled portion cancels.
+
+    Used to test whether api.polymarket.us recognizes slugs that live on
+    polymarket.com (international). If it returns "market not found" or
+    similar, the venues are separate. If it accepts the order, they
+    share infrastructure.
+    """
+    import traceback
+    if body.confirm != "YES_TEST":
+        raise HTTPException(400, "confirm must equal 'YES_TEST'")
+    notional = body.quantity * body.limit_price
+    if notional > 1.5:
+        raise HTTPException(400, f"notional ${notional:.2f} exceeds $1.50 cap")
+    if not poly.configured:
+        raise HTTPException(503, "Polymarket not configured")
+    out: dict = {
+        "slug": body.slug, "side": body.side.lower(),
+        "quantity": body.quantity, "limit_price": body.limit_price,
+        "tif": body.tif, "approx_notional_usd": round(notional, 4),
+    }
+    try:
+        resp = poly.place_order(
+            slug=body.slug,
+            side=body.side.lower(),
+            action="buy",
+            quantity=body.quantity,
+            limit_price=body.limit_price,
+            tif=body.tif,
+            order_type="limit",
+        )
+        out["status"] = "ok"
+        out["sdk_response"] = resp
+    except Exception as e:
+        out["status"] = "error"
+        out["error_type"] = type(e).__name__
+        out["error_msg"] = str(e)
+        out["traceback"] = traceback.format_exc()
+    return out
+
+
 @app.get("/api/debug/poly")
 def api_debug_poly(_: str = Depends(require_auth)):
     """Diagnostic: dump raw Polymarket SDK responses + types so we can see
